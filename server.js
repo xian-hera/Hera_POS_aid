@@ -1,3 +1,9 @@
+// Hera_POS_aid backend
+// - Apple Wallet loyalty card (generate, Apple Wallet web service, push updates)
+// - Smile.io points sync on orders/paid
+// - /api/verify for the POS "Customer Login" tile
+// - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
+
 import express from "express";
 import crypto from "crypto";
 import fetch from "node-fetch";
@@ -9,6 +15,7 @@ import http2 from "http2";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+app.set("trust proxy", true); // Render sits behind a proxy; needed for req.ip
 
 // Raw body needed for Shopify webhook HMAC validation
 app.use("/webhooks", express.raw({ type: "application/json" }));
@@ -24,55 +31,90 @@ const {
   SHOP_ACCESS_TOKEN,
   QR_SECRET,
   SMILE_API_KEY,
+  KLAVIYO_API_KEY,
 } = process.env;
 
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-07";
+const PUBLIC_URL = (APP_URL || "https://search-0wf4.onrender.com").replace(/\/+$/, "");
+
+// "log"     → accept POS requests without a valid Shopify session token, but log it
+// "enforce" → reject them (switch to this after confirming the logs show "[pos-auth] ok")
+const POS_AUTH_MODE = (process.env.POS_AUTH_MODE || "log").toLowerCase();
+
+// Old storefront links (/wallet/email/:email, /wallet/:id, /api/pass/generate/:id).
+// Set LEGACY_WALLET_LINKS=off on Render once Klaviyo points to /apps/hera/wallet.
+const LEGACY_WALLET_LINKS = (process.env.LEGACY_WALLET_LINKS || "on").toLowerCase() !== "off";
+
 const PASS_TYPE_ID = "pass.com.herabeauty.loyalty";
-const AUTH_TOKEN   = "herabeauty2026loyalty";
-const SCOPES = "read_products,read_inventory,read_customers,write_customers,read_orders";
+const AUTH_TOKEN   = "herabeauty2026loyalty"; // shared Apple Wallet auth token (per-pass tokens: phase 2)
+const DOWNLOAD_TTL_SECONDS = 10 * 60;
+
+for (const [name, value] of Object.entries({
+  SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOP_DOMAIN, SHOP_ACCESS_TOKEN, QR_SECRET,
+  WWDR_PEM_B64: process.env.WWDR_PEM_B64,
+  SIGNER_CERT_B64: process.env.SIGNER_CERT_B64,
+  SIGNER_KEY_B64: process.env.SIGNER_KEY_B64,
+})) {
+  if (!value) console.error(`[config] Missing environment variable ${name}`);
+}
 
 // ─── Apple Wallet certificates ────────────────────────────────────────────────
-const wwdr       = Buffer.from(process.env.WWDR_PEM_B64, "base64");
-const signerCert = Buffer.from(process.env.SIGNER_CERT_B64, "base64");
-const signerKey  = Buffer.from(process.env.SIGNER_KEY_B64, "base64");
+const wwdr       = Buffer.from(process.env.WWDR_PEM_B64 || "", "base64");
+const signerCert = Buffer.from(process.env.SIGNER_CERT_B64 || "", "base64");
+const signerKey  = Buffer.from(process.env.SIGNER_KEY_B64 || "", "base64");
 
-// ─── In-memory deviceId → customerId map (warm cache, rebuilt from Shopify on miss) ──
-// Key: deviceId, Value: customerId
-const deviceToCustomer = new Map();
+// ─── Small helpers ────────────────────────────────────────────────────────────
 
-// ─── Product cache ────────────────────────────────────────────────────────────
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+const isCustomerId = (v) => typeof v === "string" && /^\d{1,20}$/.test(v);
+const customerGid = (id) => `gid://shopify/Customer/${id}`;
+const hostOf = (url) => { try { return new URL(url).host; } catch { return null; } };
 
-let variantCache = [];
-let cacheBuiltAt = null;
-let cacheBuilding = false;
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a ?? ""));
+  const bb = Buffer.from(String(b ?? ""));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
 
-const PRODUCTS_QUERY = `
-  query GetVariants($cursor: String) {
-    products(first: 50, after: $cursor) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        id
-        title
-        featuredImage { url }
-        wigNumber: metafield(namespace: "custom", key: "wig_number") { value }
-        variants(first: 100) {
-          nodes {
-            id
-            title
-            sku
-            price
-            image { url }
-            customName: metafield(namespace: "custom", key: "name") { value }
-            displaySection: metafield(namespace: "custom", key: "display_section") { value }
-          }
-        }
-      }
+function hmacHex(secret, message) {
+  return crypto.createHmac("sha256", secret).update(message).digest("hex");
+}
+
+function customerIdFromSerial(serialNumber) {
+  const m = /^hera-(\d{1,20})$/.exec(serialNumber || "");
+  return m ? m[1] : null;
+}
+
+// Simple in-memory fixed-window rate limiter
+function rateLimit({ windowMs, max }) {
+  const hits = new Map();
+  setInterval(() => {
+    const cutoff = Date.now() - windowMs;
+    for (const [k, v] of hits) if (v.start < cutoff) hits.delete(k);
+  }, windowMs).unref();
+  return (req, res, next) => {
+    const key = req.ip || "unknown";
+    const now = Date.now();
+    let entry = hits.get(key);
+    if (!entry || now - entry.start >= windowMs) {
+      entry = { start: now, count: 0 };
+      hits.set(key, entry);
     }
-  }
-`;
+    entry.count += 1;
+    if (entry.count > max) {
+      console.warn(`[rate-limit] ${req.path} blocked for ${key}`);
+      return res.status(429).json({ error: "Too many requests, please wait a minute" });
+    }
+    next();
+  };
+}
+
+// ─── Shopify Admin GraphQL ────────────────────────────────────────────────────
 
 async function shopifyGraphQL(query, variables = {}) {
   const resp = await fetch(
-    `https://${SHOP_DOMAIN}/admin/api/2025-07/graphql.json`,
+    `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`,
     {
       method: "POST",
       headers: {
@@ -88,228 +130,192 @@ async function shopifyGraphQL(query, variables = {}) {
   return json.data;
 }
 
-async function buildCache() {
-  if (cacheBuilding) return;
-  cacheBuilding = true;
-  console.log("Building product cache...");
-  try {
-    const flat = [];
-    let cursor = null;
-    let hasNext = true;
-    while (hasNext) {
-      const data = await shopifyGraphQL(PRODUCTS_QUERY, cursor ? { cursor } : {});
-      const page = data.products;
-      for (const product of page.nodes) {
-        const productImage = product.featuredImage?.url || null;
-        const wigNumber = product.wigNumber?.value || "";
-        for (const variant of product.variants.nodes) {
-          flat.push({
-            variantId: variant.id,
-            productId: product.id,
-            variantNumericId: variant.id.split("/").pop(),
-            productNumericId: product.id.split("/").pop(),
-            productTitle: product.title,
-            variantTitle: variant.title,
-            sku: variant.sku || "",
-            price: variant.price,
-            customName: variant.customName?.value || "",
-            wigNumber,
-            displaySection: variant.displaySection?.value || "",
-            imageUrl: variant.image?.url || productImage || null,
-          });
-        }
-      }
-      hasNext = page.pageInfo.hasNextPage;
-      cursor = page.pageInfo.endCursor;
-    }
-    variantCache = flat;
-    cacheBuiltAt = new Date();
-    console.log(`Cache built: ${flat.length} variants`);
-  } catch (err) {
-    console.error("Cache build failed:", err.message);
-  } finally {
-    cacheBuilding = false;
-  }
-}
-
-buildCache();
-setInterval(buildCache, 12 * 60 * 60 * 1000);
-
-function normalise(str) {
-  if (!str) return "";
-  return str.toLowerCase().normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
-}
-
-function variantMatchesSingle(variant, kw) {
-  return (
-    normalise(variant.customName).includes(kw) ||
-    normalise(variant.productTitle).includes(kw) ||
-    normalise(variant.sku).includes(kw) ||
-    normalise(variant.wigNumber).includes(kw)
-  );
-}
-
-function variantMatchesAll(variant, tokens) {
-  return tokens.every(t => variantMatchesSingle(variant, t));
-}
-
-function scoreVariant(variant, kw) {
-  if (normalise(variant.customName).includes(kw)) return 0;
-  if (normalise(variant.productTitle).includes(kw)) return 1;
-  if (normalise(variant.sku).includes(kw)) return 2;
-  if (normalise(variant.wigNumber).includes(kw)) return 3;
-  return 4;
-}
-
-// ─── Token builder (numeric, compact) ────────────────────────────────────────
-
-function buildToken(customerId) {
-  const ts = Date.now().toString().slice(-6);
-  const hmacHex = crypto
-    .createHmac("sha256", QR_SECRET)
-    .update(`${customerId}${ts}`)
-    .digest("hex");
-  const numericHmac = (parseInt(hmacHex.slice(0, 8), 16) % 100000000).toString().padStart(8, "0");
-  return `${customerId}${ts}${numericHmac}`;
-}
-
-function verifyToken(token, customerId) {
-  const idLen = customerId.toString().length;
-  const ts = token.slice(idLen, idLen + 6);
-  const receivedHmac = token.slice(idLen + 6);
-  const hmacHex = crypto
-    .createHmac("sha256", QR_SECRET)
-    .update(`${customerId}${ts}`)
-    .digest("hex");
-  const expectedHmac = (parseInt(hmacHex.slice(0, 8), 16) % 100000000).toString().padStart(8, "0");
-  return receivedHmac === expectedHmac;
-}
-
-// ─── Shopify metafield helpers ────────────────────────────────────────────────
-
-async function getCustomerMetafield(customerId, namespace, key) {
-  const resp = await fetch(
-    `https://${SHOP_DOMAIN}/admin/api/2025-07/customers/${customerId}/metafields.json`,
-    { headers: { "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN } }
-  );
-  const data = await resp.json();
-  return data.metafields?.find(m => m.namespace === namespace && m.key === key) || null;
-}
-
-async function setCustomerMetafield(customerId, namespace, key, value, type = "single_line_text_field") {
-  const existing = await getCustomerMetafield(customerId, namespace, key);
-  const body = { metafield: { namespace, key, value: String(value), type } };
-
-  if (existing?.id) {
-    await fetch(
-      `https://${SHOP_DOMAIN}/admin/api/2025-07/customers/${customerId}/metafields/${existing.id}.json`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN },
-        body: JSON.stringify(body),
-      }
-    );
-  } else {
-    await fetch(
-      `https://${SHOP_DOMAIN}/admin/api/2025-07/customers/${customerId}/metafields.json`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN },
-        body: JSON.stringify(body),
-      }
-    );
-  }
-}
-
-// ─── deviceId → customerId lookup ────────────────────────────────────────────
-// First checks in-memory map (populated at registration time).
-// On miss (e.g. after server restart), falls back to Shopify metafield search
-// by scanning the customer's wallet_device_id metafield.
-// Shopify doesn't support reverse metafield lookup, so on cache miss we can't
-// easily find the customer — we return null and Apple will retry later after
-// the customer opens Wallet and re-registers.
-
-async function getCustomerIdByDeviceId(deviceId) {
-  // 1. Check in-memory map first (fast path)
-  if (deviceToCustomer.has(deviceId)) {
-    return deviceToCustomer.get(deviceId);
-  }
-  // 2. Cache miss (server restart). We can't reverse-search Shopify metafields
-  //    efficiently, so return null. Apple will re-register on next Wallet open.
-  console.log(`Device ${deviceId} not in memory cache (server may have restarted). Returning null.`);
-  return null;
-}
-
-// ─── Pass builder helper ──────────────────────────────────────────────────────
-
-const PASS_CUSTOMER_QUERY = `
+const CUSTOMER_QUERY = `
   query GetCustomer($id: ID!) {
     customer(id: $id) {
       id
       firstName
       lastName
-      loyaltyPoints: metafield(namespace: "custom", key: "points_balance") {
-        value
-      }
+      defaultEmailAddress { emailAddress }
+      defaultPhoneNumber { phoneNumber }
+      points: metafield(namespace: "custom", key: "points_balance") { value }
+      devices: metafield(namespace: "custom", key: "wallet_devices") { value }
+      legacyPushToken: metafield(namespace: "custom", key: "wallet_push_token") { value }
+      legacyDeviceId: metafield(namespace: "custom", key: "wallet_device_id") { value }
     }
   }
 `;
 
-async function generatePassBuffer(customerId) {
-  const gid = `gid://shopify/Customer/${customerId}`;
-  const data = await shopifyGraphQL(PASS_CUSTOMER_QUERY, { id: gid });
-  const customer = data.customer;
-  if (!customer) throw new Error("Customer not found");
+// Returns a normalised customer object, or null if not found.
+// devices = [{ deviceId, pushToken }] — one entry per iPhone / Apple Watch that holds the card.
+async function fetchCustomer(customerId) {
+  const data = await shopifyGraphQL(CUSTOMER_QUERY, { id: customerGid(customerId) });
+  const c = data.customer;
+  if (!c) return null;
 
-  const points = customer.loyaltyPoints?.value ?? "0";
-  const token = buildToken(customerId);
+  let devices = [];
+  try {
+    const parsed = JSON.parse(c.devices?.value || "[]");
+    if (Array.isArray(parsed)) devices = parsed.filter((d) => d && d.pushToken);
+  } catch { /* ignore malformed value */ }
+
+  // Older registrations stored a single device in two text metafields
+  const legacyPush = c.legacyPushToken?.value;
+  if (legacyPush && !devices.some((d) => d.pushToken === legacyPush)) {
+    devices.push({ deviceId: c.legacyDeviceId?.value || "", pushToken: legacyPush });
+  }
+
+  return {
+    id: customerId,
+    firstName: c.firstName || "",
+    lastName: c.lastName || "",
+    email: c.defaultEmailAddress?.emailAddress || null,
+    phone: c.defaultPhoneNumber?.phoneNumber || null,
+    points: c.points?.value ?? "0",
+    devices,
+    hasLegacyFields: Boolean(c.legacyPushToken || c.legacyDeviceId),
+  };
+}
+
+const METAFIELDS_SET = `
+  mutation SetMetafields($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      userErrors { field message }
+    }
+  }
+`;
+
+const METAFIELDS_DELETE = `
+  mutation DeleteMetafields($metafields: [MetafieldIdentifierInput!]!) {
+    metafieldsDelete(metafields: $metafields) {
+      userErrors { field message }
+    }
+  }
+`;
+
+async function setCustomerMetafield(customerId, key, value, type) {
+  const data = await shopifyGraphQL(METAFIELDS_SET, {
+    metafields: [{ ownerId: customerGid(customerId), namespace: "custom", key, type, value: String(value) }],
+  });
+  const errs = data.metafieldsSet?.userErrors || [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join(", "));
+}
+
+async function saveDevices(customer, devices) {
+  await setCustomerMetafield(customer.id, "wallet_devices", JSON.stringify(devices), "json");
+  if (customer.hasLegacyFields) {
+    await shopifyGraphQL(METAFIELDS_DELETE, {
+      metafields: [
+        { ownerId: customerGid(customer.id), namespace: "custom", key: "wallet_push_token" },
+        { ownerId: customerGid(customer.id), namespace: "custom", key: "wallet_device_id" },
+      ],
+    });
+    customer.hasLegacyFields = false;
+  }
+}
+
+async function findCustomerIdByEmail(email) {
+  const q = `email:"${email.replace(/["\\]/g, "")}"`;
+  const data = await shopifyGraphQL(
+    `query FindCustomer($q: String!) { customers(first: 1, query: $q) { nodes { id } } }`,
+    { q }
+  );
+  const gid = data.customers?.nodes?.[0]?.id;
+  return gid ? gid.split("/").pop() : null;
+}
+
+// ─── Barcode token (unchanged format; stronger version planned for phase 2) ──
+
+function barcodeHmac(customerId, ts) {
+  const hex = hmacHex(QR_SECRET, `${customerId}${ts}`);
+  return (parseInt(hex.slice(0, 8), 16) % 100000000).toString().padStart(8, "0");
+}
+
+function buildToken(customerId) {
+  const ts = Date.now().toString().slice(-6);
+  return `${customerId}${ts}${barcodeHmac(customerId, ts)}`;
+}
+
+function verifyToken(token, customerId) {
+  const idLen = customerId.length;
+  const ts = token.slice(idLen, idLen + 6);
+  const received = token.slice(idLen + 6);
+  return safeEqual(received, barcodeHmac(customerId, ts));
+}
+
+// ─── Signed, short-lived pass download links ─────────────────────────────────
+
+function signDownload(customerId, exp) {
+  return hmacHex(QR_SECRET, `pass-download:${customerId}:${exp}`);
+}
+
+function downloadUrl(customerId) {
+  const exp = nowSeconds() + DOWNLOAD_TTL_SECONDS;
+  return `${PUBLIC_URL}/api/pass/download/${customerId}?exp=${exp}&sig=${signDownload(customerId, exp)}`;
+}
+
+// ─── Pass builder ─────────────────────────────────────────────────────────────
+
+async function generatePassBuffer(customerId) {
+  const customer = await fetchCustomer(customerId);
+  if (!customer) throw new Error("Customer not found");
 
   const pass = await PKPass.from({
     model: join(__dirname, "passkit/loyalty.pass"),
     certificates: { wwdr, signerCert, signerKey },
   }, {
     serialNumber: `hera-${customerId}`,
+    // webServiceURL comes from passkit/loyalty.pass/pass.json — never change it,
+    // every card already in customers' Wallets points to that address.
   });
 
   pass.type = "storeCard";
 
   pass.setBarcodes({
-    message: token,
+    message: buildToken(customerId),
     format: "PKBarcodeFormatPDF417",
     messageEncoding: "iso-8859-1",
   });
 
-  pass.primaryFields.push({ key: "points", label: "Points", value: points });
-  pass.secondaryFields.push({ key: "name", label: "Member", value: `${customer.firstName} ${customer.lastName}` });
+  pass.primaryFields.push({ key: "points", label: "Points", value: customer.points });
+  pass.secondaryFields.push({
+    key: "name",
+    label: "Member",
+    value: `${customer.firstName} ${customer.lastName}`.trim(),
+  });
 
   return pass.getAsBuffer();
 }
 
-// ─── APNs push helper (native http2) ─────────────────────────────────────────
-//
-// Apple Wallet push rules:
-//   - Payload must be an empty JSON dictionary: {}
-//   - Use the same cert + key as pass signing
-//   - apns-topic omitted for PassKit-only certificates (cert already encodes it)
-//   - Always production APNs endpoint
-//
-// On BadDeviceToken: clears the stored push token so we don't keep hitting
-// a dead token. Apple will re-register automatically next time the user opens Wallet.
+async function sendPass(res, customerId) {
+  try {
+    const buffer = await generatePassBuffer(customerId);
+    res.set({
+      "Content-Type": "application/vnd.apple.pkpass",
+      "Content-Length": buffer.length,
+      "Cache-Control": "no-store",
+      "Last-Modified": new Date().toUTCString(),
+    });
+    res.send(buffer);
+  } catch (err) {
+    console.error(`Pass generation failed for customer ${customerId}:`, err.message);
+    res.status(err.message === "Customer not found" ? 404 : 500).json({ error: "Pass generation failed" });
+  }
+}
 
-async function sendPassUpdatePush(pushToken, customerId) {
+// ─── APNs push (Apple Wallet update) ──────────────────────────────────────────
+// Payload must be "{}". Uses the pass signing cert. Resolves { ok, status, reason }.
+
+function sendPassUpdatePush(pushToken) {
   return new Promise((resolve) => {
     const body = "{}";
+    let settled = false;
+    const done = (result) => { if (!settled) { settled = true; resolve(result); } };
 
-    const client = http2.connect("https://api.push.apple.com", {
-      cert: signerCert,
-      key: signerKey,
-      // ca omitted — Node uses system root certs to verify api.push.apple.com
-    });
-
+    const client = http2.connect("https://api.push.apple.com", { cert: signerCert, key: signerKey });
     client.on("error", (err) => {
       console.error("APNs connection error:", err.message);
-      resolve();
+      done({ ok: false, status: 0, reason: err.message });
     });
 
     const req = client.request({
@@ -319,435 +325,371 @@ async function sendPassUpdatePush(pushToken, customerId) {
       "content-type": "application/json",
       "content-length": Buffer.byteLength(body),
     });
-
-    req.write(body);
-    req.end();
+    req.setTimeout(15000, () => {
+      req.close();
+      client.close();
+      done({ ok: false, status: 0, reason: "timeout" });
+    });
 
     let status;
     let responseBody = "";
-
-    req.on("response", (headers) => {
-      status = headers[":status"];
-    });
-
-    req.on("data", (chunk) => {
-      responseBody += chunk;
-    });
-
-    req.on("end", async () => {
-      if (status === 200) {
-        console.log(`Pass update push sent successfully to ${pushToken}`);
-      } else {
-        console.error(`APNs push failed — status: ${status}, body: ${responseBody || "(empty)"}`);
-
-        // BadDeviceToken: token is invalid/expired, clear it so we don't keep trying.
-        // Apple will re-register automatically next time the user opens Wallet.
-        if (responseBody.includes("BadDeviceToken") && customerId) {
-          console.log(`Clearing stale push token for customer ${customerId}`);
-          try {
-            await setCustomerMetafield(customerId, "custom", "wallet_push_token", "");
-            // Also remove from memory cache
-            for (const [devId, cId] of deviceToCustomer.entries()) {
-              if (cId === String(customerId)) {
-                deviceToCustomer.delete(devId);
-                break;
-              }
-            }
-          } catch (err) {
-            console.error("Failed to clear stale push token:", err.message);
-          }
-        }
-      }
+    req.on("response", (headers) => { status = headers[":status"]; });
+    req.on("data", (chunk) => { responseBody += chunk; });
+    req.on("end", () => {
       client.close();
-      resolve();
+      let reason = "";
+      try { reason = JSON.parse(responseBody || "{}").reason || ""; } catch { reason = responseBody; }
+      done({ ok: status === 200, status, reason });
     });
+    req.on("error", (err) => {
+      client.close();
+      done({ ok: false, status: 0, reason: err.message });
+    });
+
+    req.end(body);
   });
 }
 
-// ─── CORS ─────────────────────────────────────────────────────────────────────
+// ─── deviceId → customerId (used when Apple asks which passes changed) ───────
+// Filled at registration AND right before every push, so a server restart or
+// Render sleep no longer breaks updates: the push itself re-creates the entry.
+const deviceToCustomer = new Map();
+
+// ─── CORS (only the POS extension origins need it) ────────────────────────────
+
+const POS_ORIGINS = new Set(["https://cdn.shopify.com", "https://extensions.shopifycdn.com"]);
 
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+  if (origin) {
+    const listed = POS_ORIGINS.has(origin);
+    if (listed || POS_AUTH_MODE !== "enforce") {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
+    if (!listed && req.path.startsWith("/api/verify")) {
+      console.warn(`[cors] request to ${req.path} from unlisted origin ${origin}`);
+    }
+  }
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-// ─── Search endpoint ──────────────────────────────────────────────────────────
+// ─── POS session token check ──────────────────────────────────────────────────
+// The POS extension sends a Shopify ID token (JWT, HS256, signed with the app secret).
 
-const MAX_RESULTS = 200;
+function verifyShopifyIdToken(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("malformed token");
+  const [h, p, s] = parts;
+  const header = JSON.parse(Buffer.from(h, "base64url").toString("utf8"));
+  if (header.alg !== "HS256") throw new Error("unexpected alg");
+  const expected = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(`${h}.${p}`).digest("base64url");
+  if (!safeEqual(expected, s)) throw new Error("bad signature");
+  const payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8"));
+  const now = nowSeconds();
+  if (typeof payload.exp !== "number" || payload.exp < now - 10) throw new Error("expired");
+  if (typeof payload.nbf === "number" && payload.nbf > now + 10) throw new Error("not yet valid");
+  if (payload.aud !== SHOPIFY_API_KEY) throw new Error("wrong audience");
+  const destHost = hostOf(payload.dest);
+  if (!destHost || destHost !== SHOP_DOMAIN) throw new Error(`wrong shop ${destHost}`);
+  if (hostOf(payload.iss) !== destHost) throw new Error("iss/dest mismatch");
+  return payload;
+}
 
-app.get("/search", (req, res) => {
-  const { q } = req.query;
-  const limit = Math.min(parseInt(req.query.limit) || 50, MAX_RESULTS);
-
-  if (!q || q.trim().length < 2) {
-    return res.json({ results: [], total: variantCache.length, cacheBuiltAt });
+function requirePosAuth(req, res, next) {
+  const auth = req.headers["authorization"] || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  try {
+    if (!token) throw new Error("no token");
+    const payload = verifyShopifyIdToken(token);
+    console.log(`[pos-auth] ok (user ${payload.sub || "?"})`);
+    return next();
+  } catch (err) {
+    if (POS_AUTH_MODE === "enforce") {
+      console.warn(`[pos-auth] rejected: ${err.message}`);
+      return res.status(401).json({ error: "This POS device is not authorized" });
+    }
+    console.warn(`[pos-auth] would reject (mode=log): ${err.message}`);
+    return next();
   }
+}
 
-  const kw = normalise(q.trim());
-  const tokens = kw.split(/\s+/).filter(Boolean);
+// ─── POS: verify loyalty card barcode ─────────────────────────────────────────
 
-  const phraseMatches = variantCache.filter(v => variantMatchesSingle(v, kw));
+app.post(
+  "/api/verify",
+  rateLimit({ windowMs: 60 * 1000, max: 30 }),
+  requirePosAuth,
+  async (req, res) => {
+    const token = String(req.body?.token ?? "").trim();
+    if (!/^\d{22,40}$/.test(token)) return res.status(400).json({ error: "Invalid card" });
 
-  let results;
-  if (phraseMatches.length > 0) {
-    results = phraseMatches.sort((a, b) => scoreVariant(a, kw) - scoreVariant(b, kw));
-  } else if (tokens.length > 1) {
-    const multiMatches = variantCache.filter(v => variantMatchesAll(v, tokens));
-    results = multiMatches.sort((a, b) => {
-      const sa = Math.min(...tokens.map(t => scoreVariant(a, t)));
-      const sb = Math.min(...tokens.map(t => scoreVariant(b, t)));
-      return sa - sb;
-    });
-  } else {
-    results = [];
-  }
+    const customerId = token.slice(0, -14);
+    if (!isCustomerId(customerId) || !verifyToken(token, customerId)) {
+      console.warn(`[verify] invalid signature from ${req.ip}`);
+      return res.status(401).json({ error: "Invalid card" });
+    }
 
-  res.json({
-    results: results.slice(0, limit),
-    total: variantCache.length,
-    cacheBuiltAt,
-  });
-});
-
-// ─── Variant inventory endpoint ───────────────────────────────────────────────
-
-const INVENTORY_QUERY = `
-  query GetVariantInventory($id: ID!) {
-    productVariant(id: $id) {
-      id
-      title
-      sku
-      price
-      inventoryItem {
-        inventoryLevels(first: 50) {
-          nodes {
-            quantities(names: ["available"]) {
-              name
-              quantity
-            }
-            location {
-              id
-              name
-            }
-          }
-        }
-      }
+    try {
+      const customer = await fetchCustomer(customerId);
+      if (!customer) return res.status(404).json({ error: "Customer not found" });
+      return res.json({
+        customerId,
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        email: customer.email,
+        phone: customer.phone,
+        loyaltyPoints: customer.points,
+      });
+    } catch (err) {
+      console.error("Customer lookup failed:", err.message);
+      return res.status(500).json({ error: "Customer lookup failed" });
     }
   }
-`;
+);
 
-app.get("/variant/:id", async (req, res) => {
-  const variantGid = `gid://shopify/ProductVariant/${req.params.id}`;
-  try {
-    const data = await shopifyGraphQL(INVENTORY_QUERY, { id: variantGid });
-    const variant = data.productVariant;
-    if (!variant) return res.status(404).json({ error: "Variant not found" });
-    const locations = variant.inventoryItem.inventoryLevels.nodes.map((level) => ({
-      locationId: level.location.id.split("/").pop(),
-      locationName: level.location.name,
-      available: level.quantities.find(q => q.name === "available")?.quantity ?? 0,
-    }));
-    res.json({
-      variantId: req.params.id,
-      title: variant.title,
-      sku: variant.sku,
-      price: variant.price,
-      locations,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// ─── Storefront: App Proxy page  (herabeauty storefront /apps/hera/wallet) ───
 
-// ─── Customer QR verify ───────────────────────────────────────────────────────
+function verifyProxySignature(query) {
+  const { signature, ...rest } = query;
+  if (typeof signature !== "string" || !signature) return false;
+  const message = Object.keys(rest)
+    .map((k) => `${k}=${Array.isArray(rest[k]) ? rest[k].join(",") : rest[k]}`)
+    .sort()
+    .join("");
+  return safeEqual(hmacHex(SHOPIFY_API_SECRET, message), signature);
+}
 
-const CUSTOMER_QUERY = `
-  query GetCustomer($id: ID!) {
-    customer(id: $id) {
-      id
-      firstName
-      lastName
-      email
-      phone
-      loyaltyPoints: metafield(namespace: "custom", key: "points_balance") {
-        value
-      }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function walletPageHtml({ downloadHref, userAgent }) {
+  const ua = userAgent || "";
+  const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|FxiOS|EdgiOS/.test(ua);
+  const showSafariNotice = ua && !isSafari;
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Hera Beauté Loyalty Card</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100vh; background: #ffffff; padding: 24px; text-align: center;
     }
+    .logo { width: 200px; margin-bottom: 48px; }
+    .btn { display: inline-block; margin-top: 24px; }
+    .btn img { width: 180px; }
+    .notice { font-size: 13px; color: #888; line-height: 1.6; max-width: 280px; margin-bottom: 8px; }
+    .arrow { font-size: 28px; position: fixed; top: 12px; right: 16px; animation: bounce 1s infinite; }
+    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  </style>
+</head>
+<body>
+  <img class="logo" src="https://cdn.shopify.com/s/files/1/1443/5388/files/Logo_bdd93355-62cf-412d-81f4-6b24fc343bf7.svg?v=1761925608" alt="Hera Beauté">
+  ${showSafariNotice ? `
+  <div class="arrow">↗</div>
+  <p class="notice">
+    Please open this page in Safari to add your card.<br>
+    Veuillez ouvrir cette page dans Safari pour ajouter votre carte.
+  </p>` : ""}
+  <a class="btn" href="${escapeHtml(downloadHref)}">
+    <img src="https://cdn.shopify.com/s/files/1/1443/5388/files/add_button.png?v=1778255486" alt="Add to Apple Wallet">
+  </a>
+</body>
+</html>`;
+}
+
+function loginRedirectHtml(returnUrl) {
+  const target = `/account/login?return_url=${encodeURIComponent(returnUrl)}`;
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="0; url=${escapeHtml(target)}"><title>Hera Beauté</title></head>
+<body style="font-family:-apple-system,sans-serif;text-align:center;padding:48px 24px">
+<p>Please log in to add your loyalty card.<br>Veuillez vous connecter pour ajouter votre carte.</p>
+<p style="margin-top:16px"><a href="${escapeHtml(target)}">Log in / Se connecter</a></p>
+</body></html>`;
+}
+
+app.get(["/proxy", "/proxy/wallet"], (req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  if (!verifyProxySignature(req.query)) {
+    console.warn(`[proxy] bad signature from ${req.ip}`);
+    return res.status(401).send("Unauthorized");
   }
-`;
-
-app.post("/api/verify", async (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ error: "Missing token" });
-
-  if (token.length < 22) return res.status(400).json({ error: "Invalid token format" });
-
-  const customer_id = token.slice(0, -14);
-
-  if (!customer_id) return res.status(400).json({ error: "Invalid token format" });
-
-  if (!verifyToken(token, customer_id)) {
-    return res.status(401).json({ error: "Invalid signature" });
+  if (req.query.shop !== SHOP_DOMAIN) return res.status(403).send("Forbidden");
+  const ts = Number(req.query.timestamp);
+  if (!Number.isFinite(ts) || Math.abs(nowSeconds() - ts) > 300) {
+    return res.status(401).send("Request expired, please reload the page");
   }
 
-  try {
-    const gid = `gid://shopify/Customer/${customer_id}`;
-    const data = await shopifyGraphQL(CUSTOMER_QUERY, { id: gid });
-    const customer = data.customer;
-    if (!customer) return res.status(404).json({ error: "Customer not found" });
+  const customerId = String(req.query.logged_in_customer_id || "");
+  const pathPrefix = String(req.query.path_prefix || "/apps/hera");
 
-    return res.json({
-      customerId: customer_id,
-      firstName: customer.firstName,
-      lastName: customer.lastName,
-      email: customer.email,
-      phone: customer.phone,
-      loyaltyPoints: customer.loyaltyPoints?.value ?? "0",
-    });
-  } catch (err) {
-    return res.status(500).json({ error: "Customer lookup failed" });
+  if (!isCustomerId(customerId)) {
+    return res.type("html").send(loginRedirectHtml(`${pathPrefix}/wallet`));
   }
+
+  res.type("html").send(walletPageHtml({
+    downloadHref: downloadUrl(customerId),
+    userAgent: req.headers["user-agent"],
+  }));
 });
 
-// ─── Apple Wallet Pass generate ───────────────────────────────────────────────
-
-app.get("/api/pass/generate/:customerId", async (req, res) => {
+// Signed, 10-minute download link produced by the App Proxy page
+app.get("/api/pass/download/:customerId", async (req, res) => {
   const { customerId } = req.params;
-  if (!customerId) return res.status(400).json({ error: "Missing customerId" });
-
-  try {
-    const buffer = await generatePassBuffer(customerId);
-    res.set({
-      "Content-Type": "application/vnd.apple.pkpass",
-      "Content-Length": buffer.length,
-      "Cache-Control": "no-store",
-    });
-    res.send(buffer);
-  } catch (err) {
-    console.error("Pass generation failed:", err.message);
-    res.status(500).json({ error: err.message });
+  const exp = Number(req.query.exp);
+  const sig = String(req.query.sig || "");
+  if (!isCustomerId(customerId) || !Number.isFinite(exp)) return res.status(400).send("Invalid link");
+  if (exp < nowSeconds()) {
+    return res.status(410).send("This link has expired. Please go back and tap the button again.");
   }
+  if (!safeEqual(signDownload(customerId, exp), sig)) return res.status(401).send("Invalid link");
+  await sendPass(res, customerId);
 });
 
-// ─── Apple Wallet Web Service endpoints ──────────────────────────────────────
+// ─── Legacy storefront links (remove with LEGACY_WALLET_LINKS=off) ───────────
 
-// Register device for push updates
-app.post("/v1/devices/:deviceId/registrations/:passTypeId/:serialNumber", async (req, res) => {
-  const { deviceId, serialNumber } = req.params;
-  const { pushToken } = req.body;
-  const authHeader = req.headers["authorization"];
-
-  if (authHeader !== `ApplePass ${AUTH_TOKEN}`) {
-    return res.status(401).send("Unauthorized");
+function legacyGuard(req, res, next) {
+  if (!LEGACY_WALLET_LINKS) {
+    return res.status(410).send("This link is no longer valid. Please use the button in your account.");
   }
+  console.warn(`[legacy] ${req.path} used`);
+  next();
+}
 
-  const customerId = serialNumber.replace("hera-", "");
-  if (!pushToken || !customerId) return res.status(400).send("Bad Request");
-
+app.get("/wallet/email/:email", legacyGuard, async (req, res) => {
   try {
-    // Store push token in metafield (persistent)
-    await setCustomerMetafield(customerId, "custom", "wallet_push_token", pushToken);
-    // Store deviceId → customerId mapping in metafield (persistent, for server restarts)
-    await setCustomerMetafield(customerId, "custom", "wallet_device_id", deviceId);
-    // Also cache in memory for fast lookup
-    deviceToCustomer.set(deviceId, customerId);
-
-    console.log(`Registered device ${deviceId} / push token for customer ${customerId}`);
-
-    // 异步查 Shopify email → 更新 Klaviyo，不阻塞对 Apple 的 201 响应
-    fetch(
-      `https://${SHOP_DOMAIN}/admin/api/2025-07/customers/${customerId}.json`,
-      { headers: { "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN } }
-    )
-      .then(r => r.json())
-      .then(d => {
-        const email = d.customer?.email;
-        if (email) return updateKlaviyoAppleCard(email);
-      })
-      .catch(err => console.error("Klaviyo AppleCard update failed:", err.message));
-
-    res.status(201).send();
-  } catch (err) {
-    console.error("Register push token error:", err.message);
-    res.status(500).send();
-  }
-});
-
-// Unregister device
-app.delete("/v1/devices/:deviceId/registrations/:passTypeId/:serialNumber", async (req, res) => {
-  const { deviceId, serialNumber } = req.params;
-  const authHeader = req.headers["authorization"];
-
-  if (authHeader !== `ApplePass ${AUTH_TOKEN}`) {
-    return res.status(401).send("Unauthorized");
-  }
-
-  const customerId = serialNumber.replace("hera-", "");
-
-  try {
-    await setCustomerMetafield(customerId, "custom", "wallet_push_token", "");
-    await setCustomerMetafield(customerId, "custom", "wallet_device_id", "");
-    deviceToCustomer.delete(deviceId);
-    console.log(`Unregistered device ${deviceId} for customer ${customerId}`);
-    res.status(200).send();
-  } catch (err) {
-    res.status(500).send();
-  }
-});
-
-// Apple asks: which passes changed since last check?
-// Called by iOS after receiving our push notification.
-// We return the serial number for this device's customer so Apple fetches the latest pass.
-app.get("/v1/devices/:deviceId/registrations/:passTypeId", async (req, res) => {
-  const { deviceId } = req.params;
-  // passesUpdatedSince is provided by Apple but we always return the pass as updated
-  // since we only push when there's actually a change.
-
-  console.log(`Apple querying registrations for device ${deviceId}`);
-
-  const customerId = await getCustomerIdByDeviceId(deviceId);
-
-  if (!customerId) {
-    // Device not found — return 204 (no updates) so Apple doesn't retry aggressively
-    console.log(`No customer found for device ${deviceId}, returning 204`);
-    return res.status(204).send();
-  }
-
-  const serialNumber = `hera-${customerId}`;
-  const lastUpdated = new Date().toISOString();
-
-  console.log(`Returning serial ${serialNumber} for device ${deviceId}`);
-
-  res.set("Last-Modified", new Date().toUTCString());
-  res.json({
-    serialNumbers: [serialNumber],
-    lastUpdated,
-  });
-});
-
-// Apple fetches the latest pass after receiving serial number above
-app.get("/v1/passes/:passTypeId/:serialNumber", async (req, res) => {
-  const { serialNumber } = req.params;
-  const authHeader = req.headers["authorization"];
-
-  if (authHeader !== `ApplePass ${AUTH_TOKEN}`) {
-    return res.status(401).send("Unauthorized");
-  }
-
-  const customerId = serialNumber.replace("hera-", "");
-  console.log(`Apple fetching updated pass for customer ${customerId}`);
-
-  try {
-    const buffer = await generatePassBuffer(customerId);
-    res.set({
-      "Content-Type": "application/vnd.apple.pkpass",
-      "Last-Modified": new Date().toUTCString(),
-    });
-    res.send(buffer);
-  } catch (err) {
-    console.error("Pass fetch error:", err.message);
-    res.status(500).send();
-  }
-});
-
-// ─── Wallet landing page by email (for Klaviyo) ───────────────────────────────
-
-app.get("/wallet/email/:email", async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
-
-  try {
-    const resp = await fetch(
-      `https://${SHOP_DOMAIN}/admin/api/2025-07/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`,
-      { headers: { "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN } }
-    );
-    const data = await resp.json();
-    const customer = data.customers?.[0];
-
-    if (!customer) {
-      return res.status(404).send("Customer not found");
-    }
-
-    res.redirect(`/wallet/${customer.id}`);
+    const customerId = await findCustomerIdByEmail(decodeURIComponent(req.params.email));
+    if (!customerId) return res.status(404).send("Customer not found");
+    res.redirect(`/wallet/${customerId}`);
   } catch (err) {
     console.error("Email lookup error:", err.message);
     res.status(500).send("Error");
   }
 });
 
-// ─── Apple Wallet landing page ────────────────────────────────────────────────
-
-app.get("/wallet/:customerId", (req, res) => {
+app.get("/wallet/:customerId", legacyGuard, (req, res) => {
   const { customerId } = req.params;
-  const ua = req.headers["user-agent"] || "";
-  const isSafari = /Safari/.test(ua) && !/Chrome/.test(ua) && !/CriOS/.test(ua) && !/FxiOS/.test(ua);
+  if (!isCustomerId(customerId)) return res.status(400).send("Invalid link");
+  res.type("html").send(walletPageHtml({
+    downloadHref: `/api/pass/generate/${customerId}`,
+    userAgent: req.headers["user-agent"],
+  }));
+});
 
-  res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hera Beauté Loyalty Card</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      background: #ffffff;
-      padding: 24px;
-      text-align: center;
-    }
-    .logo { width: 200px; margin-bottom: 48px; }
-    .btn { background: none; border: none; cursor: pointer; padding: 0; margin-top: 24px; }
-    .btn img { width: 180px; }
-    .notice {
-      font-size: 13px;
-      color: #888;
-      line-height: 1.6;
-      max-width: 280px;
-      margin-bottom: 8px;
-    }
-    .arrow {
-      font-size: 28px;
-      position: fixed;
-      top: 12px;
-      right: 16px;
-      animation: bounce 1s infinite;
-    }
-    @keyframes bounce {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-6px); }
-    }
-  </style>
-</head>
-<body>
-  <img class="logo" src="https://cdn.shopify.com/s/files/1/1443/5388/files/Logo_bdd93355-62cf-412d-81f4-6b24fc343bf7.svg?v=1761925608" alt="Hera Beauté">
+app.get("/api/pass/generate/:customerId", legacyGuard, async (req, res) => {
+  const { customerId } = req.params;
+  if (!isCustomerId(customerId)) return res.status(400).json({ error: "Invalid customerId" });
+  await sendPass(res, customerId);
+});
 
-  ${!isSafari ? `
-  <div class="arrow">↗</div>
-  <p class="notice">
-    Please open this page in Safari to add your card.<br>
-    Veuillez ouvrir cette page dans Safari pour ajouter votre carte.
-  </p>
-  ` : ""}
+// ─── Apple Wallet web service ─────────────────────────────────────────────────
 
-  <button class="btn" onclick="window.location.href='/api/pass/generate/${customerId}'">
-    <img src="https://cdn.shopify.com/s/files/1/1443/5388/files/add_button.png?v=1778255486" alt="Add to Apple Wallet">
-  </button>
-</body>
-</html>`);
+function appleAuthorized(req) {
+  return safeEqual(req.headers["authorization"] || "", `ApplePass ${AUTH_TOKEN}`);
+}
+
+// Register a device for push updates
+app.post("/v1/devices/:deviceId/registrations/:passTypeId/:serialNumber", async (req, res) => {
+  const { deviceId, passTypeId, serialNumber } = req.params;
+  if (!appleAuthorized(req)) return res.status(401).send("Unauthorized");
+  if (passTypeId !== PASS_TYPE_ID) return res.status(404).send();
+
+  const customerId = customerIdFromSerial(serialNumber);
+  const pushToken = req.body?.pushToken;
+  if (!customerId || !pushToken) return res.status(400).send("Bad Request");
+
+  try {
+    const customer = await fetchCustomer(customerId);
+    if (!customer) return res.status(404).send();
+
+    const existing = customer.devices.find((d) => d.deviceId === deviceId);
+    const alreadyRegistered = existing && existing.pushToken === pushToken;
+    const devices = customer.devices.filter((d) => d.deviceId !== deviceId && d.pushToken !== pushToken);
+    devices.push({ deviceId, pushToken });
+    await saveDevices(customer, devices);
+    deviceToCustomer.set(deviceId, customerId);
+
+    console.log(`Registered device ${deviceId} for customer ${customerId} (${devices.length} device(s))`);
+
+    if (customer.email) {
+      updateKlaviyoAppleCard(customer.email).catch((err) =>
+        console.error("Klaviyo AppleCard update failed:", err.message)
+      );
+    }
+
+    res.status(alreadyRegistered ? 200 : 201).send();
+  } catch (err) {
+    console.error("Register device error:", err.message);
+    res.status(500).send();
+  }
+});
+
+// Unregister a device
+app.delete("/v1/devices/:deviceId/registrations/:passTypeId/:serialNumber", async (req, res) => {
+  const { deviceId, serialNumber } = req.params;
+  if (!appleAuthorized(req)) return res.status(401).send("Unauthorized");
+
+  const customerId = customerIdFromSerial(serialNumber);
+  if (!customerId) return res.status(400).send();
+
+  try {
+    const customer = await fetchCustomer(customerId);
+    if (customer) {
+      const devices = customer.devices.filter((d) => d.deviceId !== deviceId);
+      await saveDevices(customer, devices);
+    }
+    deviceToCustomer.delete(deviceId);
+    console.log(`Unregistered device ${deviceId} for customer ${customerId}`);
+    res.status(200).send();
+  } catch (err) {
+    console.error("Unregister device error:", err.message);
+    res.status(500).send();
+  }
+});
+
+// Apple asks which passes changed for this device (called after our push)
+app.get("/v1/devices/:deviceId/registrations/:passTypeId", (req, res) => {
+  const { deviceId } = req.params;
+  const customerId = deviceToCustomer.get(deviceId);
+  if (!customerId) {
+    console.log(`No pending update for device ${deviceId}, returning 204`);
+    return res.status(204).send();
+  }
+  res.json({ serialNumbers: [`hera-${customerId}`], lastUpdated: new Date().toISOString() });
+});
+
+// Apple downloads the latest version of a pass
+app.get("/v1/passes/:passTypeId/:serialNumber", async (req, res) => {
+  if (!appleAuthorized(req)) return res.status(401).send("Unauthorized");
+  const customerId = customerIdFromSerial(req.params.serialNumber);
+  if (!customerId) return res.status(400).send();
+  console.log(`Apple fetching updated pass for customer ${customerId}`);
+  await sendPass(res, customerId);
+});
+
+// Apple Wallet error log (useful when debugging on a device)
+app.post("/v1/log", (req, res) => {
+  const logs = Array.isArray(req.body?.logs) ? req.body.logs.slice(0, 20) : [];
+  for (const line of logs) console.warn(`[apple-wallet-log] ${String(line).slice(0, 500)}`);
+  res.status(200).send();
 });
 
 // ─── Klaviyo: mark Apple Wallet card added ────────────────────────────────────
 
 async function updateKlaviyoAppleCard(email) {
-  const KLAVIYO_API_KEY = process.env.KLAVIYO_API_KEY;
   if (!KLAVIYO_API_KEY) {
     console.log("KLAVIYO_API_KEY not set, skipping Klaviyo update");
     return;
@@ -759,56 +701,38 @@ async function updateKlaviyoAppleCard(email) {
     "Content-Type": "application/json",
   };
 
-  // Step 1: 用 email 查 Klaviyo profile ID
   const searchResp = await fetch(
-    `https://a.klaviyo.com/api/profiles?filter=equals(email,${JSON.stringify(email)})`,
+    `https://a.klaviyo.com/api/profiles?filter=${encodeURIComponent(`equals(email,${JSON.stringify(email)})`)}`,
     { headers }
   );
   if (!searchResp.ok) throw new Error(`Klaviyo GET profiles failed: ${searchResp.status}`);
   const searchData = await searchResp.json();
   const profileId = searchData.data?.[0]?.id;
-
   if (!profileId) {
-    console.log(`No Klaviyo profile found for email ${email}, skipping`);
+    console.log("No Klaviyo profile found for this customer, skipping");
     return;
   }
 
-  // Step 2: 写入 custom property AppleCard: true
-  const updateResp = await fetch(
-    `https://a.klaviyo.com/api/profiles/${profileId}`,
-    {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify({
-        data: {
-          type: "profile",
-          id: profileId,
-          attributes: {
-            properties: {
-              AppleCard: true,
-            },
-          },
-        },
-      }),
-    }
-  );
+  const updateResp = await fetch(`https://a.klaviyo.com/api/profiles/${profileId}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      data: { type: "profile", id: profileId, attributes: { properties: { AppleCard: true } } },
+    }),
+  });
   if (!updateResp.ok) {
     const errText = await updateResp.text();
     throw new Error(`Klaviyo PATCH profile failed: ${updateResp.status} ${errText}`);
   }
-  console.log(`Klaviyo AppleCard=true set for ${email} (profile ${profileId})`);
+  console.log(`Klaviyo AppleCard=true set (profile ${profileId})`);
 }
 
 // ─── Shopify orders/paid webhook → sync Smile points + push update ────────────
 
 app.post("/webhooks/orders", async (req, res) => {
-  const hmacHeader = req.headers["x-shopify-hmac-sha256"];
-  const digest = crypto
-    .createHmac("sha256", SHOPIFY_API_SECRET)
-    .update(req.body)
-    .digest("base64");
-
-  if (digest !== hmacHeader) {
+  const hmacHeader = req.headers["x-shopify-hmac-sha256"] || "";
+  const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(req.body).digest("base64");
+  if (!safeEqual(digest, hmacHeader)) {
     console.warn("Webhook HMAC mismatch");
     return res.status(401).send("Unauthorized");
   }
@@ -820,114 +744,109 @@ app.post("/webhooks/orders", async (req, res) => {
     return res.status(400).send("Invalid JSON");
   }
 
-  const shopifyCustomerId = order.customer?.id;
-  if (!shopifyCustomerId) return res.status(200).send("No customer");
-
+  const shopifyCustomerId = order.customer?.id ? String(order.customer.id) : null;
   res.status(200).send("OK");
+  if (!shopifyCustomerId) return;
 
-  syncSmilePoints(shopifyCustomerId).catch(err =>
-    console.error("Smile sync error:", err.message)
-  );
+  syncSmilePoints(shopifyCustomerId).catch((err) => console.error("Smile sync error:", err.message));
 });
 
-async function syncSmilePoints(shopifyCustomerId) {
-  const shopifyResp = await fetch(
-    `https://${SHOP_DOMAIN}/admin/api/2025-07/customers/${shopifyCustomerId}.json`,
-    { headers: { "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN } }
-  );
-
-  if (!shopifyResp.ok) {
-    console.error(`Shopify customer fetch error: ${shopifyResp.status}`);
-    return;
-  }
-
-  const shopifyData = await shopifyResp.json();
-  const email = shopifyData.customer?.email;
-
-  if (!email) {
-    console.log(`No email for customer ${shopifyCustomerId}, skipping Smile sync`);
-    return;
-  }
+async function syncSmilePoints(customerId) {
+  const customer = await fetchCustomer(customerId);
+  if (!customer) return console.log(`Customer ${customerId} not found, skipping Smile sync`);
+  if (!customer.email) return console.log(`No email for customer ${customerId}, skipping Smile sync`);
 
   const smileResp = await fetch(
-    `https://api.smile.io/v1/customers?email=${encodeURIComponent(email)}`,
+    `https://api.smile.io/v1/customers?email=${encodeURIComponent(customer.email)}`,
     { headers: { Authorization: `Bearer ${SMILE_API_KEY}` } }
   );
-
-  if (!smileResp.ok) {
-    console.error(`Smile API error: ${smileResp.status}`);
-    return;
-  }
+  if (!smileResp.ok) return console.error(`Smile API error: ${smileResp.status}`);
 
   const smileData = await smileResp.json();
   const smileCustomer = smileData.customers?.[0];
+  if (!smileCustomer) return console.log(`No Smile customer for Shopify customer ${customerId}`);
 
-  if (!smileCustomer) {
-    console.log(`No Smile customer found for email ${email}`);
-    return;
+  const pointsBalance = String(smileCustomer.points_balance ?? 0);
+  if (pointsBalance === String(customer.points)) {
+    return console.log(`Points unchanged (${pointsBalance}) for customer ${customerId}, no push`);
   }
 
-  const pointsBalance = smileCustomer.points_balance ?? 0;
-  console.log(`Syncing Smile points for customer ${shopifyCustomerId} (${email}): ${pointsBalance}`);
+  await setCustomerMetafield(customerId, "points_balance", pointsBalance, "number_integer");
+  console.log(`Updated points_balance to ${pointsBalance} for customer ${customerId}`);
 
-  await setCustomerMetafield(shopifyCustomerId, "custom", "points_balance", String(pointsBalance), "number_integer");
-  console.log(`Updated points_balance to ${pointsBalance} for customer ${shopifyCustomerId}`);
+  if (!customer.devices.length) return console.log(`No Wallet device for customer ${customerId}, skipping push`);
 
-  const pushTokenMeta = await getCustomerMetafield(shopifyCustomerId, "custom", "wallet_push_token");
-  const pushToken = pushTokenMeta?.value;
-
-  if (pushToken) {
-    await sendPassUpdatePush(pushToken, shopifyCustomerId);
-  } else {
-    console.log(`No push token for customer ${shopifyCustomerId}, skipping push`);
+  const stillValid = [];
+  for (const device of customer.devices) {
+    if (device.deviceId) deviceToCustomer.set(device.deviceId, customerId);
+    const result = await sendPassUpdatePush(device.pushToken);
+    if (result.ok) {
+      console.log(`Pass update push sent for customer ${customerId}`);
+      stillValid.push(device);
+    } else if (result.status === 410 || ["BadDeviceToken", "Unregistered"].includes(result.reason)) {
+      console.log(`Removing dead device for customer ${customerId} (${result.reason || result.status})`);
+      if (device.deviceId) deviceToCustomer.delete(device.deviceId);
+    } else {
+      console.error(`APNs push failed for customer ${customerId}: ${result.status} ${result.reason}`);
+      stillValid.push(device);
+    }
+  }
+  if (stillValid.length !== customer.devices.length || customer.hasLegacyFields) {
+    await saveDevices(customer, stillValid);
   }
 }
 
-// ─── OAuth ────────────────────────────────────────────────────────────────────
+// ─── OAuth (only used when (re)installing the app) ────────────────────────────
+
+const SCOPES = "read_customers,write_customers,read_orders,write_app_proxy";
 
 app.get("/auth", (req, res) => {
   const { shop } = req.query;
-  if (!shop) return res.status(400).send("Missing shop");
+  if (!/^[a-z0-9-]+\.myshopify\.com$/.test(shop || "")) return res.status(400).send("Missing shop");
   const state = crypto.randomBytes(16).toString("hex");
-  const redirectUri = `${APP_URL}/auth/callback`;
-  const authUrl =
-    `https://${shop}/admin/oauth/authorize` +
-    `?client_id=${SHOPIFY_API_KEY}` +
-    `&scope=${SCOPES}` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&state=${state}`;
-  res.redirect(authUrl);
+  const redirectUri = `${PUBLIC_URL}/auth/callback`;
+  res.redirect(
+    `https://${shop}/admin/oauth/authorize?client_id=${SHOPIFY_API_KEY}` +
+    `&scope=${SCOPES}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`
+  );
 });
 
 app.get("/auth/callback", async (req, res) => {
-  const { shop, code, hmac, state, ...rest } = req.query;
-  const params = Object.entries({ shop, code, state, ...rest })
+  const { shop, code, hmac, ...rest } = req.query;
+  if (!/^[a-z0-9-]+\.myshopify\.com$/.test(shop || "")) return res.status(400).send("Invalid shop");
+  const params = Object.entries({ shop, code, ...rest })
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`)
     .join("&");
-  const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(params).digest("hex");
-  if (digest !== hmac) return res.status(403).send("HMAC validation failed");
-  const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code }),
-  });
-  const { access_token } = await tokenRes.json();
-  console.log(`Installed on ${shop}: ${access_token}`);
-  res.redirect(`https://${shop}/admin/apps`);
+  if (!safeEqual(hmacHex(SHOPIFY_API_SECRET, params), hmac)) return res.status(403).send("HMAC validation failed");
+
+  try {
+    const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code }),
+    });
+    const { access_token, scope } = await tokenRes.json();
+    // The token is intentionally NOT written to the logs. It is shown once to the
+    // admin who completed the install so it can be pasted into Render (SHOP_ACCESS_TOKEN).
+    console.log(`Installed on ${shop}, scopes: ${scope || "?"}${access_token ? "" : " (no access token returned)"}`);
+    res.set("Cache-Control", "no-store");
+    res.type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Hera_POS_aid installed</title></head>
+<body style="font-family:-apple-system,sans-serif;padding:32px;max-width:640px">
+<h2>Hera_POS_aid installed on ${escapeHtml(shop)}</h2>
+<p>Only if you are rotating the token: copy it into Render → Environment → <code>SHOP_ACCESS_TOKEN</code>. It is not stored or logged anywhere.</p>
+<pre style="background:#f4f4f4;padding:12px;word-break:break-all;white-space:pre-wrap">${escapeHtml(access_token || "(none)")}</pre>
+<p>Scopes: ${escapeHtml(scope || "?")}</p>
+<p><a href="https://${escapeHtml(shop)}/admin/apps">Back to Shopify admin</a></p>
+</body></html>`);
+  } catch (err) {
+    console.error("OAuth callback error:", err.message);
+    res.status(500).send("Install failed");
+  }
 });
 
-// ─── Cache utils ──────────────────────────────────────────────────────────────
+app.get("/", (req, res) => res.send("Hera_POS_aid OK"));
 
-app.get("/cache/refresh", (req, res) => {
-  buildCache();
-  res.json({ message: "Cache refresh started" });
+app.listen(PORT, () => {
+  console.log(`Hera_POS_aid running on port ${PORT} (POS_AUTH_MODE=${POS_AUTH_MODE}, legacy links ${LEGACY_WALLET_LINKS ? "on" : "off"})`);
 });
-
-app.get("/cache/status", (req, res) => {
-  res.json({ total: variantCache.length, cacheBuiltAt, cacheBuilding });
-});
-
-app.get("/", (req, res) => res.send("Search POS OK"));
-
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -1,3 +1,7 @@
+# Render service for Hera_POS_aid.
+# NOTE: keep `name: search` — the service display name can be changed in the Render
+# dashboard. The URL search-0wf4.onrender.com must never change: every Apple Wallet
+# card already issued points to it.
 services:
   - type: web
     name: search
@@ -17,4 +21,18 @@ services:
         sync: false
       - key: QR_SECRET
         sync: false
-    healthCheckPath:
+      - key: SMILE_API_KEY
+        sync: false
+      - key: KLAVIYO_API_KEY
+        sync: false
+      - key: WWDR_PEM_B64
+        sync: false
+      - key: SIGNER_CERT_B64
+        sync: false
+      - key: SIGNER_KEY_B64
+        sync: false
+      # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
+      - key: POS_AUTH_MODE
+        sync: false
+      - key: LEGACY_WALLET_LINKS
+        sync: false

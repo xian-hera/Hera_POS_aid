@@ -1,0 +1,19 @@
+api_version = "2026-01"
+
+[[extensions]]
+type = "ui_extension"
+# Change the merchant-facing name of the extension in locales/en.default.json
+name = "t:name"
+uid = "7ece820e-9f6d-13ab-43e6-1ee0da36704b7723ea2b"
+handle = "login"
+description = "Apple Card Login"
+
+# module: file that contains your extension’s source code
+# target: location where your extension appears in POS
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"

@@ -1,0 +1,8 @@
+{
+  "name": "Apple Card Login",
+  "tile_heading": "Grille intelligente POS",
+  "tile_subheading": "Extension {{flavor}}",
+  "modal_heading": "Fenêtre modale POS",
+  "welcome": "Bienvenue dans l'extension {{flavor}}"
+}
+

@@ -1,20 +1,31 @@
+# Hera_POS_aid — Hera Beauté's own Shopify POS tools + Apple Wallet loyalty card backend.
+# This is the former "Search" app (same client_id). Keep the client_id: the backend's
+# SHOP_ACCESS_TOKEN and the orders/paid webhook belong to this app.
+
 client_id = "4ef1ce49f9f58d050c762000e78ecf71"
-name = "Search"
+name = "Hera_POS_aid"
 application_url = "https://search-0wf4.onrender.com"
 embedded = true
 
 [build]
-automatically_update_urls_on_dev = true
+# false so that `shopify app dev` never replaces the production URLs with a tunnel
+automatically_update_urls_on_dev = false
 
 [webhooks]
-api_version = "2025-07"
+api_version = "2026-07"
 
   [[webhooks.subscriptions]]
   topics = ["orders/paid"]
   uri = "/webhooks/orders"
 
 [access_scopes]
-scopes = "read_products,read_inventory,read_customers,write_customers,read_orders"
+scopes = "read_customers,write_customers,read_orders,write_app_proxy"
 
 [auth]
 redirect_urls = [ "https://search-0wf4.onrender.com/auth/callback" ]
+
+# Storefront page for the "Add to Apple Wallet" button: https://<store>/apps/hera/wallet
+[app_proxy]
+url = "https://search-0wf4.onrender.com/proxy"
+prefix = "apps"
+subpath = "hera"

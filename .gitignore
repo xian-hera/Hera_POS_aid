@@ -1,6 +1,19 @@
-# Existing
+# Dependencies & build output
 node_modules/
 dist/
+extensions/*/dist
+extensions/*/build
+
+# Environment
+.env
+.env.*
+
+# Shopify CLI local state
+.shopify/*
+.shopify.lock
+
+# Logs
+*.log
 
 # Apple certificates — NEVER commit these
 certs/
