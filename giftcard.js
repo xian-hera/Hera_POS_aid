@@ -82,6 +82,56 @@ export function redeemQrContent(code) {
   return REDEEM_QR_PREFIX + code;
 }
 
+// ─── Balance lookup (storefront page + POS tile) ─────────────────────────────
+
+const BALANCE_QUERY = `
+  query GiftCardBalance($q: String!) {
+    giftCards(first: 5, query: $q) {
+      nodes { lastCharacters enabled expiresOn balance { amount currencyCode } }
+    }
+  }
+`;
+
+/**
+ * Turns whatever a customer typed or a scanner read into a bare redeem code, or null.
+ * Accepts the QR content (shopify-giftcard-v1-<code>) and the plain code, in any case, with
+ * spaces or dashes in it.
+ */
+export function normalizeRedeemInput(raw) {
+  let s = String(raw ?? "").trim().toLowerCase();
+  if (s.startsWith(REDEEM_QR_PREFIX)) s = s.slice(REDEEM_QR_PREFIX.length);
+  s = s.replace(/[\s-]+/g, "");
+  return /^[a-z0-9]{8,20}$/.test(s) ? s : null;
+}
+
+/**
+ * Looks a redeem code up in Shopify. Works for any Shopify gift card, not only ours.
+ * Never returns the card id, the note (it holds the activation serial) or the full code.
+ * @returns {Promise<{valid:false}|{valid:true,found:false}|{valid:true,found:true,enabled:boolean,expired:boolean,balance:number,currency:string,lastCharacters:string}>}
+ */
+export async function lookupBalance(graphql, rawCode) {
+  const code = normalizeRedeemInput(rawCode);
+  if (!code) return { valid: false };
+  const data = await graphql(BALANCE_QUERY, { q: code });
+  const last4 = code.slice(-4);
+  const hits = (data?.giftCards?.nodes || []).filter((n) => String(n.lastCharacters).toLowerCase() === last4);
+  // Exactly one match, otherwise treat it as "not found" rather than risk showing another card's balance.
+  if (hits.length !== 1) return { valid: true, found: false };
+  const n = hits[0];
+  const amount = Number(n.balance?.amount);
+  if (!Number.isFinite(amount)) return { valid: true, found: false };
+  const expired = Boolean(n.expiresOn) && new Date(`${n.expiresOn}T23:59:59`) < new Date();
+  return {
+    valid: true,
+    found: true,
+    enabled: n.enabled !== false,
+    expired,
+    balance: amount,
+    currency: n.balance.currencyCode,
+    lastCharacters: last4,
+  };
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const FIND_QUERY = `

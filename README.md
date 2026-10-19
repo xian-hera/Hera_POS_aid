@@ -30,6 +30,9 @@ Hera_POS_aid/
 | `GET /api/pass/download/:id?exp&sig` | Button on the page above | Downloads the `.pkpass`. Signed link, valid for 10 minutes. |
 | `POST /api/verify` | POS "Customer Login" tile | Checks the card barcode and returns the customer. Requires a Shopify POS session token and is rate-limited (30/min per IP). |
 | `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
+| `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
+| `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
+| `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
 | `/v1/devices/...`, `/v1/passes/...`, `/v1/log` | Apple Wallet | Apple Wallet web service: registration, updates, error logs. |
 | `POST /webhooks/orders` | Shopify `orders/paid` | Syncs Smile.io points into `custom.points_balance` and pushes a card update to every registered device. It also activates physical gift cards sold at POS (see Gift cards below). |
 | `GET /wallet/email/:email`, `/wallet/:id`, `/api/pass/generate/:id` | Legacy | Old unauthenticated links. Turned off with `LEGACY_WALLET_LINKS=off`. |
@@ -65,6 +68,8 @@ Each printed card has two unrelated-looking codes tied together by `GIFT_SECRET`
 - **A, redeem code**: QR `shopify-giftcard-v1-<code>` plus the text, under a tamper-evident sticker. The cashier never sees it. Shopify POS scans it natively to pay, and the customer can type it at online checkout.
 
 Flow: cashier scans B, picks an amount, the tile adds a custom sale line "Hera Gift Card" tagged `_hera_gc_serial=B`, the customer pays, then `orders/paid` creates the Shopify gift card with code A and the paid amount (`giftcard.js`). Only a paid POS custom-sale line can activate a card. Scanning B again afterwards shows "Activated".
+
+Balance check: customers use `https://<store>/apps/hera/giftcard-balance` (type the code, or tap "Scan QR code"; the phone camera reads the QR under the sticker). Cashiers can scan the same QR in the POS tile. The lookup works for any Shopify gift card, needs no new scope, and never returns the card note (it contains the activation serial). The page lives at `/apps/hera/giftcard-balance` (App Proxy). For the short address `www.herabeauty.ca/gift_card_balance`, create a URL redirect in Shopify admin (Online Store > Navigation > View URL redirects) from `/gift_card_balance` to `/apps/hera/giftcard-balance`. `jsQR` (Apache-2.0) is vendored in `storefront/vendor/`.
 
 Generate a batch (needs the same `GIFT_SECRET` as Render; the output contains redeem codes and is git-ignored):
 

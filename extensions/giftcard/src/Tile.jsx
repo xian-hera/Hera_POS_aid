@@ -9,7 +9,7 @@ function Extension() {
   return (
     <s-tile
       heading="Gift Card Sale"
-      subheading="Scan card, choose amount"
+      subheading="Sell a card / check balance"
       onClick={() => shopify.action.presentModal()}
     />
   );

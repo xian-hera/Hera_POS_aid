@@ -4,6 +4,7 @@
 // - /api/verify for the POS "Customer Login" tile
 // - Physical gift cards: /api/giftcard/status for the POS "Gift Card Sale" tile + activation on orders/paid
 // - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
+// - Gift card balance: storefront page /apps/hera/giftcard-balance and POS /api/giftcard/balance
 
 import express from "express";
 import crypto from "crypto";
@@ -12,7 +13,8 @@ import { PKPass } from "passkit-generator";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import http2 from "http2";
-import { createGiftCardService } from "./giftcard.js";
+import { readFileSync } from "fs";
+import { createGiftCardService, lookupBalance } from "./giftcard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -89,14 +91,14 @@ function customerIdFromSerial(serialNumber) {
 }
 
 // Simple in-memory fixed-window rate limiter
-function rateLimit({ windowMs, max }) {
+function rateLimit({ windowMs, max, key: keyOf }) {
   const hits = new Map();
   setInterval(() => {
     const cutoff = Date.now() - windowMs;
     for (const [k, v] of hits) if (v.start < cutoff) hits.delete(k);
   }, windowMs).unref();
   return (req, res, next) => {
-    const key = req.ip || "unknown";
+    const key = (keyOf ? keyOf(req) : req.ip) || "unknown";
     const now = Date.now();
     let entry = hits.get(key);
     if (!entry || now - entry.start >= windowMs) {
@@ -509,6 +511,26 @@ app.post(
   }
 );
 
+// POS tile: cashier scans the redeem QR (the one under the sticker) to read the balance.
+// The response never contains the code, only the last 4 characters.
+app.post(
+  "/api/giftcard/balance",
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
+  requirePosAuthStrict,
+  async (req, res) => {
+    try {
+      const result = await lookupBalance(shopifyGraphQL, req.body?.code);
+      if (!result.valid) return res.status(400).json({ error: "This is not a gift card redeem code" });
+      if (!result.found) return res.json({ found: false });
+      console.log(`[giftcard] balance checked at POS (…${result.lastCharacters}) by ${req.posUser}`);
+      return res.json(result);
+    } catch (err) {
+      console.error("[giftcard] POS balance lookup failed:", err.message);
+      return res.status(502).json({ error: "Could not check this card right now, please try again" });
+    }
+  }
+);
+
 // ─── Storefront: App Proxy page  (herabeauty storefront /apps/hera/wallet) ───
 
 function verifyProxySignature(query) {
@@ -603,6 +625,81 @@ app.get(["/proxy", "/proxy/wallet"], (req, res) => {
     userAgent: req.headers["user-agent"],
   }));
 });
+
+// ─── Storefront: gift card balance  (herabeauty storefront /apps/hera/giftcard-balance) ───
+// GET  /proxy/giftcard-balance            Liquid page, rendered inside the store theme (language follows the storefront)
+// GET  /proxy/giftcard-balance/app.js     page script (English / French)
+// GET  /proxy/giftcard-balance/jsqr.js    QR decoder used only when the customer taps "Scan"
+// POST /proxy/giftcard-balance/lookup     { code } -> { found, balance, currency, ... }
+
+function readStorefrontFile(...parts) {
+  try {
+    return readFileSync(join(__dirname, "storefront", ...parts));
+  } catch (err) {
+    console.error(`[giftcard-balance] cannot read storefront/${parts.join("/")}: ${err.message}`);
+    return null;
+  }
+}
+const gcbPage = readStorefrontFile("giftcard-balance.liquid");
+const gcbScript = readStorefrontFile("giftcard-balance.js");
+const gcbJsQr = readStorefrontFile("vendor", "jsQR.js");
+const gcbVersion = crypto
+  .createHash("sha1")
+  .update(gcbPage || "")
+  .update(gcbScript || "")
+  .digest("hex")
+  .slice(0, 8);
+
+// Same checks as the wallet page: Shopify signs every App Proxy request.
+function proxyGuard(req, res, next) {
+  res.set("Cache-Control", "no-store");
+  if (!verifyProxySignature(req.query)) {
+    console.warn(`[proxy] bad signature from ${req.ip} (${req.path})`);
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  if (req.query.shop !== SHOP_DOMAIN) return res.status(403).json({ error: "Forbidden" });
+  const ts = Number(req.query.timestamp);
+  if (!Number.isFinite(ts) || Math.abs(nowSeconds() - ts) > 300) {
+    return res.status(401).json({ error: "Request expired, please reload the page" });
+  }
+  next();
+}
+
+app.get("/proxy/giftcard-balance", proxyGuard, (req, res) => {
+  if (!gcbPage || !gcbScript) return res.status(503).send("Temporarily unavailable");
+  const html = gcbPage.toString("utf8").replaceAll("__ASSET_VERSION__", gcbVersion);
+  res.type("application/liquid").send(html); // Shopify renders it inside the theme layout
+});
+
+app.get("/proxy/giftcard-balance/app.js", (req, res) => {
+  if (!gcbScript) return res.status(503).end();
+  res.set("Cache-Control", "public, max-age=3600").type("application/javascript").send(gcbScript);
+});
+
+app.get("/proxy/giftcard-balance/jsqr.js", (req, res) => {
+  if (!gcbJsQr) return res.status(503).end();
+  res.set("Cache-Control", "public, max-age=86400").type("application/javascript").send(gcbJsQr);
+});
+
+app.post(
+  "/proxy/giftcard-balance/lookup",
+  proxyGuard,
+  rateLimit({ windowMs: 60 * 1000, max: 10 }),
+  // The per-IP limit above can be dodged with a forged X-Forwarded-For, so also cap the total.
+  rateLimit({ windowMs: 60 * 1000, max: 300, key: () => "all-storefront" }),
+  async (req, res) => {
+    try {
+      const result = await lookupBalance(shopifyGraphQL, req.body?.code);
+      if (!result.valid) return res.status(400).json({ error: "invalid" });
+      if (!result.found) return res.json({ found: false });
+      console.log(`[giftcard] balance checked on storefront (…${result.lastCharacters})`);
+      return res.json(result);
+    } catch (err) {
+      console.error("[giftcard] storefront balance lookup failed:", err.message);
+      return res.status(502).json({ error: "unavailable" });
+    }
+  }
+);
 
 // Signed, 10-minute download link produced by the App Proxy page
 app.get("/api/pass/download/:customerId", async (req, res) => {

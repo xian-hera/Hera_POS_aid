@@ -6,6 +6,7 @@ type = "ui_extension"
 name = "t:name"
 # `uid` is added automatically by `shopify app deploy` the first time
 handle = "giftcard"
+uid = "c71763f6-60ad-babb-01b9-6380f6e6883c26668e44"
 description = "Sell physical gift cards: scan the card, choose an amount, activate after payment"
 
 [[extensions.targeting]]

@@ -12,6 +12,7 @@ const SERIAL_PROPERTY = '_hera_gc_serial';
 const PRESET_AMOUNTS = [25, 50, 75, 100, 150, 200];
 const MAX_AMOUNT = 500; // sanity limit in the UI; the server has its own limit (GIFT_MAX_AMOUNT)
 const LOOKS_LIKE_SERIAL = /^HGB[A-Z0-9]{14}$/;
+const REDEEM_QR_PREFIX = 'shopify-giftcard-v1-'; // the QR under the sticker: used to check a balance
 
 export default async () => {
   render(<Extension />, document.body);
@@ -41,8 +42,9 @@ function money(n) {
 }
 
 function Extension() {
-  // scan | checking | amount | added | active | error
+  // scan | checking | amount | added | active | balance | error
   const [step, setStep] = useState('scan');
+  const [balanceInfo, setBalanceInfo] = useState(null);
   const [serial, setSerial] = useState('');
   const [preset, setPreset] = useState(null);
   const [custom, setCustom] = useState('');
@@ -102,6 +104,30 @@ function Extension() {
     }
   };
 
+  // The customer shows a card (sticker already removed) and the cashier scans the redeem QR to read the balance.
+  const checkBalance = async (qrContent) => {
+    busyRef.current = true;
+    setErrorMsg('');
+    go('checking');
+    try {
+      const resp = await fetch(`${SERVER_URL}/api/giftcard/balance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ code: qrContent }),
+      });
+      let data = null;
+      try { data = await resp.json(); } catch { /* non-JSON response */ }
+      if (!resp.ok) throw new Error(errorMessage(resp.status, data));
+      setBalanceInfo(data);
+      go('balance');
+    } catch (err) {
+      setErrorMsg(err.message || 'Network error, please try again.');
+      go('error');
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
   const handleScan = (raw) => {
     const original = String(raw ?? '').trim();
     if (!original) return;
@@ -115,9 +141,9 @@ function Extension() {
 
     hideCamera();
 
-    if (original.toLowerCase().startsWith('shopify-giftcard')) {
-      setErrorMsg('That is the redeem code (the one under the sticker). Do not scan it here. Scan the activation code on the front of the card.');
-      go('error');
+    if (original.toLowerCase().startsWith(REDEEM_QR_PREFIX)) {
+      // Redeem code scanned: only ever used to show the balance, never to sell.
+      checkBalance(original);
       return;
     }
     if (!LOOKS_LIKE_SERIAL.test(value)) {
@@ -202,6 +228,7 @@ function Extension() {
     setPreset(null);
     setCustom('');
     setErrorMsg('');
+    setBalanceInfo(null);
     go('scan');
   };
 
@@ -216,7 +243,10 @@ function Extension() {
             <s-stack direction="block" gap="base">
               <s-text type="strong" emphasis="bold">Ready to Scan</s-text>
               <s-text color="subdued" appearance="subdued">
-                Scan the QR code on the front of the card. Leave the sticker on: the customer removes it themselves.
+                To sell a card, scan the QR code on the front of the card. Leave the sticker on: the customer removes it themselves.
+              </s-text>
+              <s-text color="subdued" appearance="subdued">
+                To check a balance, scan the QR code under the sticker (the customer peels it).
               </s-text>
               {hasCamera && (
                 <s-button onClick={showCamera}>Scan with camera</s-button>
@@ -298,6 +328,31 @@ function Extension() {
                 If you just completed the payment, the card is loaded and can be handed to the customer.
                 If you are trying to sell it, it is already sold: do not sell it again.
               </s-text>
+              <s-button onClick={handleReset}>Scan another card</s-button>
+            </s-stack>
+          )}
+
+          {step === 'balance' && (
+            <s-stack direction="block" gap="base">
+              {balanceInfo?.found ? (
+                <>
+                  <s-text type="strong" emphasis="bold">Card …{String(balanceInfo.lastCharacters || '').toUpperCase()}</s-text>
+                  <s-text type="strong" emphasis="bold">Balance: {money(balanceInfo.balance)} {balanceInfo.currency}</s-text>
+                  {balanceInfo.enabled === false && (
+                    <s-text tone="critical" appearance="critical">This card is disabled and cannot be used.</s-text>
+                  )}
+                  {balanceInfo.expired && (
+                    <s-text tone="critical" appearance="critical">This card has expired.</s-text>
+                  )}
+                </>
+              ) : (
+                <>
+                  <s-text type="strong" emphasis="bold">Card not found</s-text>
+                  <s-text color="subdued" appearance="subdued">
+                    The code is wrong, or the card has not been activated (sold) yet.
+                  </s-text>
+                </>
+              )}
               <s-button onClick={handleReset}>Scan another card</s-button>
             </s-stack>
           )}
