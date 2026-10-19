@@ -2,8 +2,10 @@
   .hera-gcb { max-width: 480px; margin: 0 auto; padding: 48px 16px 64px; box-sizing: border-box; }
   .hera-gcb *, .hera-gcb *::before, .hera-gcb *::after { box-sizing: border-box; }
   .hera-gcb h1 { margin: 0 0 12px; font-size: 1.6rem; line-height: 1.25; text-align: center; }
-  .hera-gcb__intro { margin: 0 0 28px; text-align: center; opacity: .75; line-height: 1.5; }
-  .hera-gcb label { display: block; margin-bottom: 8px; font-size: .9rem; font-weight: 600; }
+  .hera-gcb__intro { margin: 0 0 28px; text-align: center; opacity: .75; line-height: 1.5; font-size: 1rem; }
+  .hera-gcb__labelrow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .hera-gcb label { display: block; font-size: 1rem; font-weight: 600; }
+  .hera-gcb__help { padding: 0; font: inherit; font-size: .9rem; color: #E32A69; background: none; border: 0; text-decoration: underline; cursor: pointer; white-space: nowrap; }
   .hera-gcb input[type="text"] {
     display: block; width: 100%; padding: 14px 14px; font: inherit; font-size: 1.05rem; letter-spacing: .08em;
     color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 6px; margin-bottom: 14px;
@@ -11,10 +13,11 @@
   .hera-gcb input[type="text"]:focus { outline: 2px solid currentColor; outline-offset: 2px; }
   .hera-gcb__btn {
     display: block; width: 100%; padding: 14px 16px; margin-bottom: 10px; font: inherit; font-weight: 600; cursor: pointer;
-    color: #fff; background: #111; border: 1px solid #111; border-radius: 6px;
+    color: #fff; background: #E32A69; border: 1px solid #E32A69; border-radius: 999px;
   }
   .hera-gcb__btn:disabled { opacity: .55; cursor: default; }
   .hera-gcb__btn--ghost { color: inherit; background: transparent; border-color: currentColor; }
+  .hera-gcb__btn:focus-visible, .hera-gcb__help:focus-visible { outline: 2px solid #E32A69; outline-offset: 2px; }
   .hera-gcb__scanner { margin: 4px 0 16px; text-align: center; }
   .hera-gcb__scanner video { width: 100%; max-height: 340px; background: #000; border-radius: 8px; object-fit: cover; }
   .hera-gcb__scanner p { margin: 10px 0; opacity: .75; font-size: .9rem; }
@@ -24,18 +27,28 @@
   .hera-gcb__small { display: block; font-size: .85rem; opacity: .7; }
   .hera-gcb__amount { display: block; margin: 6px 0 8px; font-size: 2.2rem; font-weight: 700; line-height: 1.1; }
   .hera-gcb__result .hera-gcb__btn { margin: 18px 0 0; }
-  .hera-gcb__footer { margin-top: 28px; text-align: center; font-size: .85rem; opacity: .6; }
+  .hera-gcb__footer { margin-top: 28px; text-align: center; font-size: 1rem; opacity: .75; line-height: 1.5; }
+  .hera-gcb-modal { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,.6); }
+  .hera-gcb-modal[hidden] { display: none; }
+  .hera-gcb-modal__box { position: relative; max-width: 560px; width: 100%; max-height: 92vh; overflow: auto; padding: 16px; background: #fff; color: #111; border-radius: 12px; }
+  .hera-gcb-modal__box img { display: block; width: 100%; height: auto; border-radius: 6px; }
+  .hera-gcb-modal__close { position: absolute; top: 6px; right: 8px; width: 36px; height: 36px; font-size: 26px; line-height: 1; color: #111; background: rgba(255,255,255,.9); border: 0; border-radius: 50%; cursor: pointer; }
 </style>
 
 <div class="hera-gcb" id="hera-gcb"
      data-locale="{{ request.locale.iso_code }}"
      data-endpoint="/apps/hera/giftcard-balance/lookup"
-     data-jsqr="/apps/hera/giftcard-balance/jsqr.js?v=__ASSET_VERSION__">
+     data-jsqr="/apps/hera/giftcard-balance/jsqr.js?v=__ASSET_VERSION__"
+     data-help-image="/apps/hera/giftcard-balance/img/code-location.png"
+     data-help-image-fr="">
   <h1 data-i18n="title">Check your gift card balance</h1>
   <p class="hera-gcb__intro" data-i18n="intro">Enter the code printed under the sticker on your card, or scan its QR code.</p>
 
   <form id="hera-gcb-form" novalidate>
-    <label for="hera-gcb-code" data-i18n="label">Gift card code</label>
+    <div class="hera-gcb__labelrow">
+      <label for="hera-gcb-code" data-i18n="label">Gift card code</label>
+      <button type="button" class="hera-gcb__help" id="hera-gcb-help" data-i18n="help">Where is the code</button>
+    </div>
     <input type="text" id="hera-gcb-code" name="code" autocomplete="off" autocapitalize="characters"
            autocorrect="off" spellcheck="false" inputmode="text" maxlength="60"
            data-i18n-placeholder="placeholder" placeholder="ABCD2345EFGH6789">
@@ -53,6 +66,13 @@
 
   <noscript><p>Please enable JavaScript to check your balance. / Veuillez activer JavaScript pour vérifier votre solde.</p></noscript>
   <p class="hera-gcb__footer" data-i18n="footer">Hera Beauté gift cards can be used in store and online.</p>
+</div>
+
+<div class="hera-gcb-modal" id="hera-gcb-modal" role="dialog" aria-modal="true" hidden>
+  <div class="hera-gcb-modal__box">
+    <button type="button" class="hera-gcb-modal__close" id="hera-gcb-modal-close" aria-label="Close">&times;</button>
+    <img id="hera-gcb-modal-img" alt="" loading="lazy">
+  </div>
 </div>
 
 <script src="/apps/hera/giftcard-balance/app.js?v=__ASSET_VERSION__" defer></script>

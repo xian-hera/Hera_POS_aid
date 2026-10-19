@@ -34,7 +34,8 @@ function errorMessage(status, data) {
     return 'This POS device is not authorized. Please make sure the staff account is logged in.';
   }
   if (status === 429) return 'Too many scans, please wait a minute and try again.';
-  return data?.error || `Could not check the card (${status})`;
+  const base = data?.error || `Could not check the card (${status})`;
+  return data?.detail ? `${base} [${data.detail}]` : base;
 }
 
 function money(n) {
@@ -51,7 +52,6 @@ function Extension() {
   const [adding, setAdding] = useState(false);
   const [addedAmount, setAddedAmount] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
-  const [hasCamera, setHasCamera] = useState(false);
 
   const stepRef = useRef('scan');
   const busyRef = useRef(false);
@@ -60,18 +60,6 @@ function Extension() {
   const go = (next) => {
     stepRef.current = next;
     setStep(next);
-  };
-
-  const hideCamera = () => {
-    try {
-      if (typeof shopify.scanner.hideCameraScanner === 'function') shopify.scanner.hideCameraScanner();
-    } catch { /* not open */ }
-  };
-
-  const showCamera = () => {
-    try {
-      if (typeof shopify.scanner.showCameraScanner === 'function') shopify.scanner.showCameraScanner();
-    } catch { /* camera not available */ }
   };
 
   const checkCard = async (serialValue) => {
@@ -139,8 +127,6 @@ function Extension() {
     if (value === lastScanRef.current.value && now - lastScanRef.current.at < 1500) return;
     lastScanRef.current = { value, at: now };
 
-    hideCamera();
-
     if (original.toLowerCase().startsWith(REDEEM_QR_PREFIX)) {
       // Redeem code scanned: only ever used to show the balance, never to sell.
       checkBalance(original);
@@ -163,17 +149,9 @@ function Extension() {
       if (!ready || !result?.data) return;
       handleScan(result.data);
     });
-    let unsubscribeSources = () => {};
-    try {
-      unsubscribeSources = shopify.scanner.sources.current.subscribe((sources) => {
-        setHasCamera(Array.isArray(sources) && sources.includes('camera'));
-      });
-    } catch { /* sources not available */ }
     return () => {
       clearTimeout(readyTimer);
       unsubscribeData();
-      unsubscribeSources();
-      hideCamera();
     };
   }, []);
 
@@ -235,22 +213,19 @@ function Extension() {
   const shortId = serial ? `…${serial.slice(-4)}` : '';
 
   return (
-    <s-page heading="Gift Card Sale">
+    <s-page heading="Sell Gift Card">
       <s-scroll-box>
         <s-box padding="base">
 
           {step === 'scan' && (
             <s-stack direction="block" gap="base">
-              <s-text type="strong" emphasis="bold">Ready to Scan</s-text>
+              <s-text type="strong" emphasis="bold">Scan now</s-text>
               <s-text color="subdued" appearance="subdued">
-                To sell a card, scan the QR code on the front of the card. Leave the sticker on: the customer removes it themselves.
+                To sell a Gift Card, scan the QR code on the right, without scratch off anything;
               </s-text>
               <s-text color="subdued" appearance="subdued">
-                To check a balance, scan the QR code under the sticker (the customer peels it).
+                To check balance, scan the QR code on the left, customer needs to scratch it first.
               </s-text>
-              {hasCamera && (
-                <s-button onClick={showCamera}>Scan with camera</s-button>
-              )}
             </s-stack>
           )}
 

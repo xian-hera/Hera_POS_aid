@@ -8,8 +8,8 @@ export default async () => {
 function Extension() {
   return (
     <s-tile
-      heading="Gift Card Sale"
-      subheading="Sell a card / check balance"
+      heading="Sell Gift Card"
+      subheading="Scan to sell or check balance"
       onClick={() => shopify.action.presentModal()}
     />
   );

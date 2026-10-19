@@ -116,7 +116,7 @@ function rateLimit({ windowMs, max, key: keyOf }) {
 
 // ─── Shopify Admin GraphQL ────────────────────────────────────────────────────
 
-async function shopifyGraphQL(query, variables = {}) {
+async function shopifyGraphQL(query, variables = {}, { timeoutMs } = {}) {
   const resp = await fetch(
     `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`,
     {
@@ -126,6 +126,8 @@ async function shopifyGraphQL(query, variables = {}) {
         "X-Shopify-Access-Token": SHOP_ACCESS_TOKEN,
       },
       body: JSON.stringify({ query, variables }),
+      // Optional: only the gift card balance lookups set a timeout, everything else behaves as before.
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     }
   );
   if (!resp.ok) throw new Error(`Shopify API error: ${resp.status}`);
@@ -468,7 +470,7 @@ let giftCards = null;
 if (GIFT_SECRET.length >= 32) {
   giftCards = createGiftCardService({
     secret: GIFT_SECRET,
-    graphql: shopifyGraphQL,
+    graphql: (query, variables) => shopifyGraphQL(query, variables, { timeoutMs: 20000 }),
     maxAmount: GIFT_MAX_AMOUNT,
     currency: GIFT_CURRENCY,
   });
@@ -511,6 +513,26 @@ app.post(
   }
 );
 
+// Render -> Shopify connections occasionally hang or reset (the error text is then empty: "request to ... failed, reason: ").
+// Balance lookups must answer quickly, so each try is limited to 8 s and a network failure is retried (reads are harmless to repeat).
+const describeError = (err) =>
+  [err?.name, err?.code || err?.cause?.code, err?.message].filter(Boolean).join(" ") || "unknown error";
+const isNetworkError = (err) =>
+  ["AbortError", "TimeoutError", "FetchError"].includes(err?.name) || /^request to /.test(err?.message || "");
+
+async function graphqlWithRetry(query, variables, { timeoutMs, attempts }) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await shopifyGraphQL(query, variables, { timeoutMs });
+    } catch (err) {
+      if (attempt >= attempts || !isNetworkError(err)) throw err;
+      console.warn(`[shopify] network error (${describeError(err)}), retrying ${attempt}/${attempts - 1}`);
+      await new Promise((r) => setTimeout(r, 300 * attempt));
+    }
+  }
+}
+const balanceGraphQL = (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 8000, attempts: 3 });
+
 // POS tile: cashier scans the redeem QR (the one under the sticker) to read the balance.
 // The response never contains the code, only the last 4 characters.
 app.post(
@@ -518,15 +540,20 @@ app.post(
   rateLimit({ windowMs: 60 * 1000, max: 60 }),
   requirePosAuthStrict,
   async (req, res) => {
+    const started = Date.now();
     try {
-      const result = await lookupBalance(shopifyGraphQL, req.body?.code);
+      const result = await lookupBalance(balanceGraphQL, req.body?.code);
       if (!result.valid) return res.status(400).json({ error: "This is not a gift card redeem code" });
       if (!result.found) return res.json({ found: false });
-      console.log(`[giftcard] balance checked at POS (…${result.lastCharacters}) by ${req.posUser}`);
+      console.log(`[giftcard] balance checked at POS (…${result.lastCharacters}) by ${req.posUser} in ${Date.now() - started} ms`);
       return res.json(result);
     } catch (err) {
-      console.error("[giftcard] POS balance lookup failed:", err.message);
-      return res.status(502).json({ error: "Could not check this card right now, please try again" });
+      console.error(`[giftcard] POS balance lookup failed after ${Date.now() - started} ms:`, describeError(err));
+      // The POS route is staff-only, so it may carry the technical reason (shown in small print on the tile).
+      return res.status(502).json({
+        error: "Could not check this card right now, please try again",
+        detail: describeError(err).slice(0, 160),
+      });
     }
   }
 );
@@ -676,6 +703,16 @@ app.get("/proxy/giftcard-balance/app.js", (req, res) => {
   res.set("Cache-Control", "public, max-age=3600").type("application/javascript").send(gcbScript);
 });
 
+// "Where is the code" pictures: storefront/images/<name>.png|jpg|webp|svg (replace the files, or point the page at a CDN URL).
+const GCB_IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml" };
+app.get("/proxy/giftcard-balance/img/:name", (req, res) => {
+  const m = /^([a-z0-9_-]{1,60})\.(png|jpe?g|webp|svg)$/i.exec(req.params.name || "");
+  if (!m) return res.status(404).end();
+  const data = readStorefrontFile("images", req.params.name);
+  if (!data) return res.status(404).end();
+  res.set("Cache-Control", "public, max-age=300").type(GCB_IMAGE_TYPES[m[2].toLowerCase()]).send(data);
+});
+
 app.get("/proxy/giftcard-balance/jsqr.js", (req, res) => {
   if (!gcbJsQr) return res.status(503).end();
   res.set("Cache-Control", "public, max-age=86400").type("application/javascript").send(gcbJsQr);
@@ -688,14 +725,15 @@ app.post(
   // The per-IP limit above can be dodged with a forged X-Forwarded-For, so also cap the total.
   rateLimit({ windowMs: 60 * 1000, max: 300, key: () => "all-storefront" }),
   async (req, res) => {
+    const started = Date.now();
     try {
-      const result = await lookupBalance(shopifyGraphQL, req.body?.code);
+      const result = await lookupBalance(balanceGraphQL, req.body?.code);
       if (!result.valid) return res.status(400).json({ error: "invalid" });
       if (!result.found) return res.json({ found: false });
-      console.log(`[giftcard] balance checked on storefront (…${result.lastCharacters})`);
+      console.log(`[giftcard] balance checked on storefront (…${result.lastCharacters}) in ${Date.now() - started} ms`);
       return res.json(result);
     } catch (err) {
-      console.error("[giftcard] storefront balance lookup failed:", err.message);
+      console.error(`[giftcard] storefront balance lookup failed after ${Date.now() - started} ms:`, describeError(err));
       return res.status(502).json({ error: "unavailable" });
     }
   }

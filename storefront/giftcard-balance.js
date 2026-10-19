@@ -16,6 +16,9 @@
       scan: 'Scan QR code',
       stop: 'Cancel',
       scanHint: 'Point the camera at the QR code under the sticker.',
+      help: 'Where is the code',
+      helpAlt: 'Where to find your gift card code',
+      close: 'Close',
       balance: 'Your balance',
       ending: 'Card ending in {x}',
       another: 'Check another card',
@@ -41,6 +44,9 @@
       scan: 'Numériser le code QR',
       stop: 'Annuler',
       scanHint: "Placez le code QR situé sous l'autocollant devant la caméra.",
+      help: 'Où se trouve le code',
+      helpAlt: 'Où trouver le code de votre carte-cadeau',
+      close: 'Fermer',
       balance: 'Votre solde',
       ending: 'Carte se terminant par {x}',
       another: 'Vérifier une autre carte',
@@ -193,6 +199,31 @@
     e.preventDefault();
     submitTyped();
   });
+
+  // ── "Where is the code" picture ──
+  var helpBtn = document.getElementById('hera-gcb-help');
+  var modal = document.getElementById('hera-gcb-modal');
+  var modalImg = document.getElementById('hera-gcb-modal-img');
+  var modalClose = document.getElementById('hera-gcb-modal-close');
+  function closeHelp() {
+    modal.hidden = true;
+    helpBtn.focus();
+  }
+  if (helpBtn && modal && modalImg) {
+    modalClose.setAttribute('aria-label', t('close'));
+    helpBtn.addEventListener('click', function () {
+      // A French picture can be set in data-help-image-fr; otherwise the same picture is used.
+      var src = (lang === 'fr' && root.getAttribute('data-help-image-fr')) || root.getAttribute('data-help-image');
+      if (!src) return;
+      modalImg.alt = t('helpAlt');
+      modalImg.src = src;
+      modal.hidden = false;
+      modalClose.focus();
+    });
+    modalClose.addEventListener('click', closeHelp);
+    modal.addEventListener('click', function (e) { if (e.target === modal) closeHelp(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !modal.hidden) closeHelp(); });
+  }
 
   // ── QR scanning (camera) ──
   var stream = null;
