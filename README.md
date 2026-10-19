@@ -29,8 +29,9 @@ Hera_POS_aid/
 | `GET /proxy/wallet` | Storefront `/apps/hera/wallet` (Klaviyo button) | Logged-in customer gets an "Add to Apple Wallet" page. Identity comes from the Shopify App Proxy signature. |
 | `GET /api/pass/download/:id?exp&sig` | Button on the page above | Downloads the `.pkpass`. Signed link, valid for 10 minutes. |
 | `POST /api/verify` | POS "Customer Login" tile | Checks the card barcode and returns the customer. Requires a Shopify POS session token and is rate-limited (30/min per IP). |
+| `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
 | `/v1/devices/...`, `/v1/passes/...`, `/v1/log` | Apple Wallet | Apple Wallet web service: registration, updates, error logs. |
-| `POST /webhooks/orders` | Shopify `orders/paid` | Syncs Smile.io points into `custom.points_balance` and pushes a card update to every registered device. |
+| `POST /webhooks/orders` | Shopify `orders/paid` | Syncs Smile.io points into `custom.points_balance` and pushes a card update to every registered device. It also activates physical gift cards sold at POS (see Gift cards below). |
 | `GET /wallet/email/:email`, `/wallet/:id`, `/api/pass/generate/:id` | Legacy | Old unauthenticated links. Turned off with `LEGACY_WALLET_LINKS=off`. |
 | `/auth`, `/auth/callback` | Re-install only | OAuth. The token is shown once in the browser and never logged. |
 
@@ -52,6 +53,31 @@ once and then migrated automatically.
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
+| `GIFT_SECRET` | 32+ random characters. Links each card's activation serial (B) to its redeem code (A). Never change it after cards are printed. Gift cards are disabled if it is missing. |
+| `GIFT_MAX_AMOUNT` | Optional. Largest card the server will activate. Default `2000`. |
+| `GIFT_CURRENCY` | Optional, e.g. `CAD`. Orders in another currency do not activate cards. |
+
+## Gift cards (physical, POS)
+
+Each printed card has two unrelated-looking codes tied together by `GIFT_SECRET`:
+
+- **B, activation serial** (`HGB...`): QR on the front, outside the sticker. The cashier scans it in the POS **Gift Card Sale** tile.
+- **A, redeem code**: QR `shopify-giftcard-v1-<code>` plus the text, under a tamper-evident sticker. The cashier never sees it. Shopify POS scans it natively to pay, and the customer can type it at online checkout.
+
+Flow: cashier scans B, picks an amount, the tile adds a custom sale line "Hera Gift Card" tagged `_hera_gc_serial=B`, the customer pays, then `orders/paid` creates the Shopify gift card with code A and the paid amount (`giftcard.js`). Only a paid POS custom-sale line can activate a card. Scanning B again afterwards shows "Activated".
+
+Generate a batch (needs the same `GIFT_SECRET` as Render; the output contains redeem codes and is git-ignored):
+
+```
+npm install
+GIFT_SECRET=... npm run giftcards -- 50
+```
+
+This writes `giftcards-output/<timestamp>/` with `cards.csv`, QR PNGs (error correction Q) and `preview.html`.
+
+Needs the `read_gift_cards,write_gift_cards` scopes: after `shopify app deploy`, approve them in the Shopify admin and re-run `/auth` to get a new `SHOP_ACCESS_TOKEN`.
+
+A paid card whose activation fails is only logged (`[giftcard] FAILED ...`). Refunds after activation are not handled.
 
 ## Deploy
 

@@ -2,6 +2,7 @@
 // - Apple Wallet loyalty card (generate, Apple Wallet web service, push updates)
 // - Smile.io points sync on orders/paid
 // - /api/verify for the POS "Customer Login" tile
+// - Physical gift cards: /api/giftcard/status for the POS "Gift Card Sale" tile + activation on orders/paid
 // - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
 
 import express from "express";
@@ -11,6 +12,7 @@ import { PKPass } from "passkit-generator";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import http2 from "http2";
+import { createGiftCardService } from "./giftcard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -451,6 +453,62 @@ app.post(
   }
 );
 
+// ─── POS: physical gift card sale (activation happens after payment) ──────────
+// The "Gift Card Sale" POS tile scans the serial printed OUTSIDE the sticker, then adds a custom
+// sale line tagged with that serial to the cart. When the order is paid (orders/paid webhook below)
+// the card is created in Shopify with the redeem code that belongs to the serial. See giftcard.js.
+
+const GIFT_SECRET = process.env.GIFT_SECRET || "";
+const GIFT_MAX_AMOUNT = Number(process.env.GIFT_MAX_AMOUNT) || 2000;
+const GIFT_CURRENCY = process.env.GIFT_CURRENCY || "";
+
+let giftCards = null;
+if (GIFT_SECRET.length >= 32) {
+  giftCards = createGiftCardService({
+    secret: GIFT_SECRET,
+    graphql: shopifyGraphQL,
+    maxAmount: GIFT_MAX_AMOUNT,
+    currency: GIFT_CURRENCY,
+  });
+} else {
+  console.warn("[giftcard] GIFT_SECRET is missing or shorter than 32 characters: gift card sales are disabled");
+}
+
+// Always enforced, whatever POS_AUTH_MODE says: this endpoint decides whether a card can be sold.
+function requirePosAuthStrict(req, res, next) {
+  const auth = req.headers["authorization"] || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  try {
+    if (!token) throw new Error("no token");
+    const payload = verifyShopifyIdToken(token);
+    req.posUser = payload.sub || "?";
+    return next();
+  } catch (err) {
+    console.warn(`[pos-auth] rejected (gift card): ${err.message}`);
+    return res.status(401).json({ error: "This POS device is not authorized" });
+  }
+}
+
+app.post(
+  "/api/giftcard/status",
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
+  requirePosAuthStrict,
+  async (req, res) => {
+    if (!giftCards) return res.status(503).json({ error: "Gift card sales are not configured" });
+    try {
+      const result = await giftCards.status(req.body?.serial);
+      if (!result.valid) {
+        console.warn(`[giftcard] invalid serial scanned by POS user ${req.posUser}`);
+        return res.status(400).json({ error: "Invalid gift card code" });
+      }
+      return res.json({ valid: true, active: result.active });
+    } catch (err) {
+      console.error("[giftcard] status check failed:", err.message);
+      return res.status(502).json({ error: "Could not check this card right now, please try again" });
+    }
+  }
+);
+
 // ─── Storefront: App Proxy page  (herabeauty storefront /apps/hera/wallet) ───
 
 function verifyProxySignature(query) {
@@ -746,6 +804,13 @@ app.post("/webhooks/orders", async (req, res) => {
 
   const shopifyCustomerId = order.customer?.id ? String(order.customer.id) : null;
   res.status(200).send("OK");
+
+  // Gift card sale: activate the card behind a paid POS gift card line. Independent of the
+  // customer/points logic below (a gift card sale usually has no customer attached).
+  if (giftCards) {
+    giftCards.activateFromOrder(order).catch((err) => console.error("[giftcard] activation error:", err.message));
+  }
+
   if (!shopifyCustomerId) return;
 
   syncSmilePoints(shopifyCustomerId).catch((err) => console.error("Smile sync error:", err.message));
@@ -798,7 +863,7 @@ async function syncSmilePoints(customerId) {
 
 // ─── OAuth (only used when (re)installing the app) ────────────────────────────
 
-const SCOPES = "read_customers,write_customers,read_orders,write_app_proxy";
+const SCOPES = "read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards";
 
 app.get("/auth", (req, res) => {
   const { shop } = req.query;

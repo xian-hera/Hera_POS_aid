@@ -21,3 +21,6 @@ certs/
 *.pem
 *.cer
 *.certSigningRequest
+
+# Generated gift card code lists (contain redeem codes: never commit)
+giftcards-output/

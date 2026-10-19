@@ -1,0 +1,17 @@
+api_version = "2026-01"
+
+[[extensions]]
+type = "ui_extension"
+# Merchant-facing name: see locales/en.default.json
+name = "t:name"
+# `uid` is added automatically by `shopify app deploy` the first time
+handle = "giftcard"
+description = "Sell physical gift cards: scan the card, choose an amount, activate after payment"
+
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"

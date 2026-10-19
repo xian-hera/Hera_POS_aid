@@ -19,7 +19,7 @@ api_version = "2026-07"
   uri = "/webhooks/orders"
 
 [access_scopes]
-scopes = "read_customers,write_customers,read_orders,write_app_proxy"
+scopes = "read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards"
 
 [auth]
 redirect_urls = [ "https://search-0wf4.onrender.com/auth/callback" ]
