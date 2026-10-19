@@ -41,6 +41,9 @@ services:
       # Optional: refuse gift card orders in another currency, e.g. CAD
       - key: GIFT_CURRENCY
         sync: false
+      # Optional: numeric Shopify product id of "Hera Beauté Physical Gift Card" (built-in default in server.js)
+      - key: GIFT_PRODUCT_ID
+        sync: false
       # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
       - key: POS_AUTH_MODE
         sync: false

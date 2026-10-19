@@ -13,7 +13,9 @@
 import crypto from "node:crypto";
 
 export const SERIAL_PREFIX = "HGB";
-export const GIFT_LINE_TITLE = "Hera Gift Card"; // title of the POS custom-sale line
+export const GIFT_LINE_TITLE = "Hera Gift Card"; // legacy: title of the old POS custom-sale line (no longer accepted)
+// The physical card is sold as a regular Shopify product (one variant per amount, POS channel only), so that
+// loyalty apps (Smile) can exclude it by product. Its numeric Shopify product id is configured in server.js.
 export const SERIAL_PROPERTY = "_hera_gc_serial"; // line item property carrying B
 export const REDEEM_QR_PREFIX = "shopify-giftcard-v1-"; // what Shopify POS recognises
 
@@ -156,6 +158,7 @@ const CREATE_MUTATION = `
 /**
  * @param {object}   opts
  * @param {string}   opts.secret      GIFT_SECRET
+ * @param {string|number} opts.productId  Shopify product id of "Hera Beauté Physical Gift Card"; only its lines can activate a card
  * @param {Function} opts.graphql     async (query, variables) => data   (Admin API)
  * @param {number}   [opts.maxAmount] refuse to create a card above this amount
  * @param {string}   [opts.currency]  if set, orders in another currency are refused
@@ -165,12 +168,14 @@ const CREATE_MUTATION = `
 export function createGiftCardService({
   secret,
   graphql,
+  productId = "",
   maxAmount = 2000,
   currency = "",
   log = console,
   retryDelaysMs = [1500, 3000],
 }) {
   requireSecret(secret);
+  const giftProductId = String(productId || "");
   const inflight = new Set();
 
   /** Does a Shopify gift card with redeem code A already exist? */
@@ -264,10 +269,10 @@ export function createGiftCardService({
       if (!prop) continue;
       const orderRef = order.name || order.id;
 
-      // Only a POS custom sale may activate a card. A normal product line could be forged
-      // online by anyone who has seen a serial on a card in the store.
-      if (li.product_id || li.variant_id || li.title !== GIFT_LINE_TITLE) {
-        log.warn(`[giftcard] ignored line "${li.title}" in order ${orderRef}: not a POS gift card line`);
+      // Only a line of the physical gift card product, on a paid POS order, may activate a card
+      // (the product is sold in the POS channel only, and web orders are refused above).
+      if (!giftProductId || String(li.product_id || "") !== giftProductId) {
+        log.warn(`[giftcard] ignored line "${li.title}" in order ${orderRef}: not the physical gift card product`);
         continue;
       }
       if (Number(li.quantity) !== 1) {

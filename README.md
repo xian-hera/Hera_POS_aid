@@ -59,6 +59,7 @@ once and then migrated automatically.
 | `GIFT_SECRET` | 32+ random characters. Links each card's activation serial (B) to its redeem code (A). Never change it after cards are printed. Gift cards are disabled if it is missing. |
 | `GIFT_MAX_AMOUNT` | Optional. Largest card the server will activate. Default `2000`. |
 | `GIFT_CURRENCY` | Optional, e.g. `CAD`. Orders in another currency do not activate cards. |
+| `GIFT_PRODUCT_ID` | Optional. Numeric id of the physical gift card product. Built-in default in `server.js`. |
 
 ## Gift cards (physical, POS)
 
@@ -67,9 +68,13 @@ Each printed card has two unrelated-looking codes tied together by `GIFT_SECRET`
 - **B, activation serial** (`HGB...`): QR on the front, outside the sticker. The cashier scans it in the POS **Gift Card Sale** tile.
 - **A, redeem code**: QR `shopify-giftcard-v1-<code>` plus the text, under a tamper-evident sticker. The cashier never sees it. Shopify POS scans it natively to pay, and the customer can type it at online checkout.
 
-Flow: cashier scans B, picks an amount, the tile adds a custom sale line "Hera Gift Card" tagged `_hera_gc_serial=B`, the customer pays, then `orders/paid` creates the Shopify gift card with code A and the paid amount (`giftcard.js`). Only a paid POS custom-sale line can activate a card. Scanning B again afterwards shows "Activated".
+Flow: cashier scans B, picks an amount, the tile adds one variant of the Shopify product **Hera Beauté Physical Gift Card** to the cart, tagged `_hera_gc_serial=B`. The customer pays, then `orders/paid` creates the Shopify gift card with code A and the paid amount (`giftcard.js`). Only a line of that product on a paid POS order can activate a card. Scanning B again afterwards shows "Activated".
+
+The product (a regular product, NOT a Shopify gift card product) has one variant per amount, is sold in the Point of Sale channel only, is not taxable and has no inventory tracking. It is excluded from Smile points in Smile > Settings > Platform > Product exclusion, which is why a regular product is used instead of a custom sale. Its id is built into `server.js` (`GIFT_PRODUCT_ID`, override on Render only if the product is re-created). The amounts offered by the tile are the `GIFT_VARIANTS` list at the top of `extensions/giftcard/src/Modal.jsx`: to add or remove an amount, change the variants in Shopify, update that list with the new variant ids, and run `shopify app deploy`.
 
 Balance check: customers use `https://<store>/apps/hera/giftcard-balance` (type the code, or tap "Scan QR code"; the phone camera reads the QR under the sticker). Cashiers can scan the same QR in the POS tile. The lookup works for any Shopify gift card, needs no new scope, and never returns the card note (it contains the activation serial). The page lives at `/apps/hera/giftcard-balance` (App Proxy). For the short address `www.herabeauty.ca/gift_card_balance`, create a URL redirect in Shopify admin (Online Store > Navigation > View URL redirects) from `/gift_card_balance` to `/apps/hera/giftcard-balance`. `jsQR` (Apache-2.0) is vendored in `storefront/vendor/`.
+
+POS guide picture: the scan screen of the tile shows `storefront/images/pos-guide.png` (served by the backend at `/proxy/giftcard-balance/img/pos-guide.png`). To change it, replace that file (keep the 1.6 : 1 shape) and push to Render. No `shopify app deploy` is needed unless the shape changes (`GUIDE_IMAGE_ASPECT_RATIO` in `Modal.jsx`).
 
 Generate a batch (needs the same `GIFT_SECRET` as Render; the output contains redeem codes and is git-ignored):
 

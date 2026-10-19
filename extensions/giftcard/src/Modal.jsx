@@ -5,13 +5,48 @@ import { useState, useEffect, useRef } from 'preact/hooks';
 // Shared Hera_POS_aid backend (Render).
 const SERVER_URL = "https://search-0wf4.onrender.com";
 
-// These two must match giftcard.js on the server.
-const GIFT_LINE_TITLE = 'Hera Gift Card';
+// Must match giftcard.js on the server.
 const SERIAL_PROPERTY = '_hera_gc_serial';
 
-const PRESET_AMOUNTS = [25, 50, 75, 100, 150, 200];
-const MAX_AMOUNT = 500; // sanity limit in the UI; the server has its own limit (GIFT_MAX_AMOUNT)
+// The card is sold as the Shopify product "Hera Beauté Physical Gift Card": one variant per amount
+// (POS channel only, not taxable). The server only activates cards for lines of that product.
+// To add or remove an amount, change the variant list in Shopify and in this list, then run `shopify app deploy`.
+const GIFT_VARIANTS = [
+  { amount: 5, variantId: 67771738587446 },
+  { amount: 10, variantId: 67771738620214 },
+  { amount: 15, variantId: 67771738652982 },
+  { amount: 20, variantId: 67771738685750 },
+  { amount: 25, variantId: 67771738718518 },
+  { amount: 30, variantId: 67771738751286 },
+  { amount: 35, variantId: 67771738784054 },
+  { amount: 40, variantId: 67771738816822 },
+  { amount: 45, variantId: 67771738849590 },
+  { amount: 50, variantId: 67771738882358 },
+  { amount: 55, variantId: 67771738915126 },
+  { amount: 60, variantId: 67771738947894 },
+  { amount: 65, variantId: 67771738980662 },
+  { amount: 70, variantId: 67771739013430 },
+  { amount: 75, variantId: 67771739046198 },
+  { amount: 80, variantId: 67771739078966 },
+  { amount: 85, variantId: 67771739111734 },
+  { amount: 90, variantId: 67771739144502 },
+  { amount: 95, variantId: 67771739177270 },
+  { amount: 100, variantId: 67771739210038 },
+  { amount: 150, variantId: 67771739242806 },
+  { amount: 180, variantId: 67771739275574 },
+  { amount: 200, variantId: 67771739308342 },
+];
+const BUTTONS_PER_ROW = 4;
+const AMOUNT_ROWS = Array.from({ length: Math.ceil(GIFT_VARIANTS.length / BUTTONS_PER_ROW) }, (_, i) =>
+  GIFT_VARIANTS.slice(i * BUTTONS_PER_ROW, (i + 1) * BUTTONS_PER_ROW)
+);
 const LOOKS_LIKE_SERIAL = /^HGB[A-Z0-9]{14}$/;
+// Picture shown under the instructions on the scan screen. It is served by the backend, so replacing
+// storefront/images/pos-guide.png and pushing to Render is enough: no `shopify app deploy` needed.
+// (Any public https image URL works too. Set it to '' to hide the picture.)
+const GUIDE_IMAGE_URL = `${SERVER_URL}/proxy/giftcard-balance/img/pos-guide.png`;
+const GUIDE_IMAGE_ASPECT_RATIO = '1.6'; // width / height of the picture, e.g. 1600 x 1000
+
 const REDEEM_QR_PREFIX = 'shopify-giftcard-v1-'; // the QR under the sticker: used to check a balance
 
 export default async () => {
@@ -48,7 +83,6 @@ function Extension() {
   const [balanceInfo, setBalanceInfo] = useState(null);
   const [serial, setSerial] = useState('');
   const [preset, setPreset] = useState(null);
-  const [custom, setCustom] = useState('');
   const [adding, setAdding] = useState(false);
   const [addedAmount, setAddedAmount] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -81,7 +115,6 @@ function Extension() {
         go('active');
       } else {
         setPreset(null);
-        setCustom('');
         go('amount');
       }
     } catch (err) {
@@ -155,14 +188,10 @@ function Extension() {
     };
   }, []);
 
-  // Amount: a typed custom amount wins over a preset button.
-  const customValue = custom.trim() === '' ? null : Number(custom);
-  const amount = customValue !== null ? customValue : preset;
-  const amountValid =
-    Number.isFinite(amount) &&
-    amount >= 1 &&
-    amount <= MAX_AMOUNT &&
-    Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-6; // at most 2 decimals
+  // `preset` holds the chosen amount (one of GIFT_VARIANTS).
+  const chosen = GIFT_VARIANTS.find((v) => v.amount === preset) || null;
+  const amount = chosen ? chosen.amount : null;
+  const amountValid = Boolean(chosen);
 
   const handleAdd = async () => {
     if (!amountValid || adding) return;
@@ -177,12 +206,8 @@ function Extension() {
       } catch { /* cart not readable: the server still activates each card only once */ }
       if (alreadyInCart) throw new Error('This card is already in the cart.');
 
-      uuid = await shopify.cart.addCustomSale({
-        title: GIFT_LINE_TITLE,
-        price: Number(amount).toFixed(2),
-        quantity: 1,
-        taxable: false,
-      });
+      // Returns '' when POS did not add the line (e.g. a dialog was dismissed).
+      uuid = await shopify.cart.addLineItem(chosen.variantId, 1);
       if (!uuid) throw new Error('POS did not confirm the new line.');
       await shopify.cart.addLineItemProperties(uuid, { [SERIAL_PROPERTY]: serial });
 
@@ -204,7 +229,6 @@ function Extension() {
     lastScanRef.current = { value: null, at: 0 };
     setSerial('');
     setPreset(null);
-    setCustom('');
     setErrorMsg('');
     setBalanceInfo(null);
     go('scan');
@@ -226,6 +250,17 @@ function Extension() {
               <s-text color="subdued" appearance="subdued">
                 To check balance, scan the QR code on the left, customer needs to scratch it first.
               </s-text>
+              {GUIDE_IMAGE_URL && (
+                <s-box>
+                  <s-image
+                    src={GUIDE_IMAGE_URL}
+                    alt="Where to scan: the code on the right sells a card, the code on the left checks the balance"
+                    aspectRatio={GUIDE_IMAGE_ASPECT_RATIO}
+                    objectFit="contain"
+                    inlineSize="fill"
+                  />
+                </s-box>
+              )}
             </s-stack>
           )}
 
@@ -240,43 +275,26 @@ function Extension() {
               <s-text type="strong" emphasis="bold">New card {shortId}</s-text>
               <s-text color="subdued" appearance="subdued">Not activated yet. Choose the amount the customer is paying.</s-text>
 
-              <s-stack direction="inline" gap="base">
-                {PRESET_AMOUNTS.slice(0, 3).map((v) => (
-                  <s-button
-                    key={v}
-                    variant={custom.trim() === '' && preset === v ? 'primary' : 'secondary'}
-                    onClick={() => { setPreset(v); setCustom(''); }}
-                  >
-                    {money(v)}
-                  </s-button>
-                ))}
-              </s-stack>
-              <s-stack direction="inline" gap="base">
-                {PRESET_AMOUNTS.slice(3).map((v) => (
-                  <s-button
-                    key={v}
-                    variant={custom.trim() === '' && preset === v ? 'primary' : 'secondary'}
-                    onClick={() => { setPreset(v); setCustom(''); }}
-                  >
-                    {money(v)}
-                  </s-button>
-                ))}
-              </s-stack>
-
-              <s-number-field
-                label="Other amount ($)"
-                value={custom}
-                min={1}
-                max={MAX_AMOUNT}
-                onInput={(e) => { setCustom(e.currentTarget.value); setPreset(null); }}
-              />
+              {AMOUNT_ROWS.map((row) => (
+                <s-stack key={row[0].amount} direction="inline" gap="base">
+                  {row.map((v) => (
+                    <s-button
+                      key={v.amount}
+                      variant={preset === v.amount ? 'primary' : 'secondary'}
+                      onClick={() => setPreset(v.amount)}
+                    >
+                      {money(v.amount)}
+                    </s-button>
+                  ))}
+                </s-stack>
+              ))}
 
               {amountValid ? (
                 <s-button variant="primary" disabled={adding} onClick={handleAdd}>
                   {adding ? 'Adding...' : `Add ${money(amount)} gift card to cart`}
                 </s-button>
               ) : (
-                <s-text color="subdued" appearance="subdued">Pick an amount from $1 to ${MAX_AMOUNT} (cents allowed).</s-text>
+                <s-text color="subdued" appearance="subdued">Tap an amount above.</s-text>
               )}
               <s-button onClick={handleReset}>Scan a different card</s-button>
             </s-stack>

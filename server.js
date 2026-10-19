@@ -465,12 +465,16 @@ app.post(
 const GIFT_SECRET = process.env.GIFT_SECRET || "";
 const GIFT_MAX_AMOUNT = Number(process.env.GIFT_MAX_AMOUNT) || 2000;
 const GIFT_CURRENCY = process.env.GIFT_CURRENCY || "";
+// Shopify product "Hera Beauté Physical Gift Card" (numeric id). Excluded from Smile points by product.
+// Only needs to be set on Render if the product is ever re-created.
+const GIFT_PRODUCT_ID = process.env.GIFT_PRODUCT_ID || "15428034789686";
 
 let giftCards = null;
 if (GIFT_SECRET.length >= 32) {
   giftCards = createGiftCardService({
     secret: GIFT_SECRET,
     graphql: (query, variables) => shopifyGraphQL(query, variables, { timeoutMs: 20000 }),
+    productId: GIFT_PRODUCT_ID,
     maxAmount: GIFT_MAX_AMOUNT,
     currency: GIFT_CURRENCY,
   });
