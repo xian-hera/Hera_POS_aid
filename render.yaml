@@ -44,6 +44,15 @@ services:
       # Optional: numeric Shopify product id of "Hera Beauté Physical Gift Card" (built-in default in server.js)
       - key: GIFT_PRODUCT_ID
         sync: false
+      # Restock Notify: secret sent by Shopify Flow in the X-Restock-Key header (24+ random characters)
+      - key: RESTOCK_RUN_KEY
+        sync: false
+      # Restock Notify: notify when "available" at the store is >= this number (default 1)
+      - key: RESTOCK_THRESHOLD
+        sync: false
+      # Restock Notify: exceptions by product type, e.g. WIG=1 (default WIG=1 when not set)
+      - key: RESTOCK_TYPE_THRESHOLDS
+        sync: false
       # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
       - key: POS_AUTH_MODE
         sync: false

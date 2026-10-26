@@ -1,0 +1,18 @@
+api_version = "2026-01"
+
+[[extensions]]
+type = "ui_extension"
+# Merchant-facing name: see locales/en.default.json
+name = "t:name"
+# `uid` is added automatically by `shopify app deploy` the first time
+handle = "restock"
+uid = "82e73c89-9f69-2163-11b8-916613359b70cc6e60bc"
+description = "Restock Notify: save the out-of-stock products a customer wants, notify them when back in stock"
+
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"

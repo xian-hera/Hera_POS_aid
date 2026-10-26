@@ -19,7 +19,8 @@ api_version = "2026-07"
   uri = "/webhooks/orders"
 
 [access_scopes]
-scopes = "read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards"
+# Keep in sync with SCOPES in server.js (restock scopes: RESTOCK_SCOPES in restock.js)
+scopes = "read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards,read_products,read_inventory,read_locations,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions"
 
 [auth]
 redirect_urls = [ "https://search-0wf4.onrender.com/auth/callback" ]

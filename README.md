@@ -18,7 +18,9 @@ Hera_POS_aid/
 ├─ passkit/loyalty.pass/   Apple Wallet card template
 ├─ certs/                  Apple certificates (local only, git-ignored)
 └─ extensions/
-   └─ login/               POS tile "Customer Login": scans the Wallet card barcode
+   ├─ login/               POS tile "Customer Login": scans the Wallet card barcode
+   ├─ giftcard/            POS tile "Gift Card Sale"
+   └─ restock/             POS tile "Restock Notify" (backend: restock.js)
                            (add future POS tiles as new folders here)
 ```
 
@@ -31,6 +33,8 @@ Hera_POS_aid/
 | `POST /api/verify` | POS "Customer Login" tile | Checks the card barcode and returns the customer. Requires a Shopify POS session token and is rate-limited (30/min per IP). |
 | `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
+| `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, fill in a missing email / phone, variant search fallback, save the request. POS session token always required. |
+| `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
 | `/v1/devices/...`, `/v1/passes/...`, `/v1/log` | Apple Wallet | Apple Wallet web service: registration, updates, error logs. |
@@ -60,6 +64,9 @@ once and then migrated automatically.
 | `GIFT_MAX_AMOUNT` | Optional. Largest card the server will activate. Default `2000`. |
 | `GIFT_CURRENCY` | Optional, e.g. `CAD`. Orders in another currency do not activate cards. |
 | `GIFT_PRODUCT_ID` | Optional. Numeric id of the physical gift card product. Built-in default in `server.js`. |
+| `RESTOCK_RUN_KEY` | 24+ random characters. Shopify Flow sends it in the `X-Restock-Key` header. The stock check is disabled if it is missing. |
+| `RESTOCK_THRESHOLD` | Optional. Notify when "available" at the store is at least this number. Default `1`. |
+| `RESTOCK_TYPE_THRESHOLDS` | Optional. Exceptions by product type, `TYPE=number` separated by commas, e.g. `WIG=1,MAKEUP=3`. Type names are not case-sensitive. Default `WIG=1` (a wig is notified as soon as 1 is available). Set it to an empty value to remove all exceptions. |
 
 ## Gift cards (physical, POS)
 
@@ -88,6 +95,66 @@ This writes `giftcards-output/<timestamp>/` with `cards.csv`, QR PNGs (error cor
 Needs the `read_gift_cards,write_gift_cards` scopes: after `shopify app deploy`, approve them in the Shopify admin and re-run `/auth` to get a new `SHOP_ACCESS_TOKEN`.
 
 A paid card whose activation fails is only logged (`[giftcard] FAILED ...`). Refunds after activation are not handled.
+
+## Restock Notify (POS)
+
+A customer wants a product that is out of stock in the store. The cashier logs the customer in,
+opens **Restock Notify**, searches (name, SKU or barcode, or scans) and taps **Add** on each
+variant, then on page 2 checks the email / phone (fills in what is missing), subscribes the
+customer if they agree, chooses **Email** or **SMS** and confirms.
+
+Search is variant-level: the tile uses the POS device's own search, splits each product into its
+variants and keeps only the variants that match (a SKU or barcode gives exactly one line). When the
+device finds nothing, the backend searches Shopify (`productVariants`).
+
+Data (all in Shopify):
+
+- **Metaobject `restock_request`** (merchant-owned, created automatically on start-up): one entry
+  per customer + variant + store. Fields: `status` (`pending` / `notified` / `cancelled`),
+  `location_code`, `location_id`, `customer`, `customer_id`, `variant`, `variant_id`, `sku`,
+  `product_title`, `variant_title`, `channel` (`email` / `sms`), `requested_at`, `notified_at`,
+  `available_at_notify`, `staff_id`. Entries are never deleted, so they can be used for analysis.
+  `status`, `location_code`, `customer_id`, `variant_id`, `sku`, `channel` are filterable.
+- **Customer metafield `custom.restock_requests`** (JSON): only what the customer is still waiting
+  for, e.g. `[{"location":"MTL10","sku":"...","variant_id":"...","product":"...","channel":"sms","requested_at":"..."}]`.
+- **Location metafield `custom.display_name`**: the store name sent to Klaviyo (MTL10 → "Chambly Longueuil").
+  The address comes from the Shopify location. Empty → the location name (code) is used.
+
+Stock check: Shopify Flow calls `POST /api/restock/run` at 10:00 and 16:00. For each pending request,
+if `available` at that store ≥ the threshold (`RESTOCK_THRESHOLD`, or the product type's value from `RESTOCK_TYPE_THRESHOLDS`, e.g. WIG = 1), the backend sends the Klaviyo event
+**Restock Available** (one event per customer + store + channel, with an `items` list), marks the
+requests `notified` and removes them from the customer metafield. If Klaviyo fails, nothing is marked
+and the next run tries again. A deleted variant is marked `cancelled`.
+
+SMS needs consent: if SMS is chosen for a customer not subscribed to SMS, the tile asks the cashier at Confirm
+(subscribe to SMS, or notify by email instead). At notify time, a request for SMS whose customer is not
+subscribed to SMS is sent by email when the customer has an email (otherwise it stays pending).
+
+Klaviyo event properties: `channel` (the channel actually used), `requested_channel` (the one chosen at POS), `store_code`, `store_name`, `store_address`, `store_address1`,
+`store_city`, `store_province`, `store_zip`, `item_count`, `first_product_title`, `first_variant_title`,
+`first_image_url`, `items[]` (`sku`, `product_title`, `variant_title`, `vendor`, `price`, `image_url`,
+`url`, `available`, `variant_id`), `shopify_customer_id`. The profile is identified by email
+(channel `email`) or phone number (channel `sms`).
+
+Reading the list from another app on the shop (needs `read_metaobjects`, plus `read_customers` /
+`read_products` to expand the references):
+
+```graphql
+query {
+  metaobjects(type: "restock_request", first: 250,
+              query: "fields.location_code:\"MTL10\" AND fields.status:\"pending\"") {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      sku: field(key: "sku") { value }
+      product: field(key: "product_title") { value }
+      variant: field(key: "variant_title") { value }
+      channel: field(key: "channel") { value }
+      requestedAt: field(key: "requested_at") { value }
+      customer: field(key: "customer") { reference { ... on Customer { displayName } } }
+    }
+  }
+}
+```
 
 ## Deploy
 

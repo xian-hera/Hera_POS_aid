@@ -5,6 +5,7 @@
 // - Physical gift cards: /api/giftcard/status for the POS "Gift Card Sale" tile + activation on orders/paid
 // - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
 // - Gift card balance: storefront page /apps/hera/giftcard-balance and POS /api/giftcard/balance
+// - Restock Notify: POS tile + daily stock check called by Shopify Flow (see restock.js)
 
 import express from "express";
 import crypto from "crypto";
@@ -15,6 +16,7 @@ import { fileURLToPath } from "url";
 import http2 from "http2";
 import { readFileSync } from "fs";
 import { createGiftCardService, lookupBalance } from "./giftcard.js";
+import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -492,7 +494,7 @@ function requirePosAuthStrict(req, res, next) {
     req.posUser = payload.sub || "?";
     return next();
   } catch (err) {
-    console.warn(`[pos-auth] rejected (gift card): ${err.message}`);
+    console.warn(`[pos-auth] rejected (${req.path}): ${err.message}`);
     return res.status(401).json({ error: "This POS device is not authorized" });
   }
 }
@@ -561,6 +563,16 @@ app.post(
     }
   }
 );
+
+// ─── POS: Restock Notify (restock.js) ─────────────────────────────────────────
+// POS routes always require a valid POS session token (they return customer contact details).
+
+registerRestock(app, {
+  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 20000, attempts: 2 }),
+  requirePosAuth: requirePosAuthStrict,
+  rateLimit,
+  safeEqual,
+});
 
 // ─── Storefront: App Proxy page  (herabeauty storefront /apps/hera/wallet) ───
 
@@ -1002,7 +1014,7 @@ async function syncSmilePoints(customerId) {
 
 // ─── OAuth (only used when (re)installing the app) ────────────────────────────
 
-const SCOPES = "read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards";
+const SCOPES = ["read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards", ...RESTOCK_SCOPES].join(",");
 
 app.get("/auth", (req, res) => {
   const { shop } = req.query;
