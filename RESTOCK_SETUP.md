@@ -114,6 +114,8 @@
 |---|---|
 | `channel` | 实际通知方式 `email` / `sms`（Klaviyo flow 按这个值分流） |
 | `language` | `en` / `fr`，cashier 在 POS 上确认的语言（存在顾客的 Shopify locale 里）。Klaviyo 里可以按它分英文、法文模板 |
+
+另外，后端会把同一个语言写进 **Klaviyo 顾客资料的 Locale**（`fr-CA` / `en-CA`）：在 POS 上 Confirm 时立即写一次，发送 event 时再写一次。原因是 Shopify 改了顾客语言后，不一定会重新同步到 Klaviyo。所以 Klaviyo 的 Smart Translations（按 Locale 选语言）也能用。两种方式**选一种**：要么 flow 里按 `language` 分流、每个分支写原文；要么不分流、用 Smart Translations。不要两种同时用。
 | `requested_channel` | 登记时选的方式。和 `channel` 不同，就说明是 SMS 未订阅、改用了 Email |
 | `store_code` | `MTL10` |
 | `store_name` | `Chambly Longueuil` |

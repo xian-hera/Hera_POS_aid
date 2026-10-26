@@ -37,7 +37,7 @@ const TYPE = "restock_request";
 const METAFIELD_NS = "custom";
 const METAFIELD_KEY = "restock_requests";
 const KLAVIYO_METRIC = "Restock Available";
-const KLAVIYO_REVISION = "2026-04-15";
+const KLAVIYO_REVISION = "2026-07-15";
 const MAX_ITEMS_PER_REQUEST = 30;
 
 const isNumericId = (v) => /^\d{1,20}$/.test(String(v ?? ""));
@@ -79,6 +79,11 @@ function productUrl(v) {
   const variantId = String(v.id || "").split("/").pop();
   if (v.product?.onlineStoreUrl) return `${v.product.onlineStoreUrl}?variant=${variantId}`;
   return `${STORE_URL}/search?q=${encodeURIComponent(v.sku || v.product?.title || "")}`;
+}
+
+// "fr" → "fr-CA", "en" → "en-CA" (BCP 47, the format Klaviyo's Locale expects)
+export function klaviyoLocale(language) {
+  return language === "fr" ? "fr-CA" : "en-CA";
 }
 
 // "Product - Shade" for one item
@@ -654,6 +659,15 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
           }
         }
 
+        // Also write the language to the Klaviyo profile right away (Shopify does not always re-sync locale changes).
+        // Not awaited: the POS answer must not wait for Klaviyo; a failure is only logged.
+        if (language) {
+          const ident = channel === "sms" ? { phone_number: customer.phone } : { email: customer.email };
+          setKlaviyoLocale(ident, language)
+            .then(() => console.log(`[restock] Klaviyo locale set to ${klaviyoLocale(language)} for customer ${customerId}`))
+            .catch((err) => console.warn(`[restock] could not set Klaviyo locale for customer ${customerId}: ${err.message}`));
+        }
+
         const now = isoNow();
         let added = 0;
         let updated = 0;
@@ -712,11 +726,32 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
 
   // ── Klaviyo ───────────────────────────────────────────────────────────────
 
+  async function setKlaviyoLocale(identifier, language) {
+    if (!KLAVIYO_API_KEY) throw new Error("KLAVIYO_API_KEY not set");
+    const resp = await fetch("https://a.klaviyo.com/api/profile-import", {
+      method: "POST",
+      headers: {
+        Authorization: `Klaviyo-API-Key ${KLAVIYO_API_KEY}`,
+        revision: KLAVIYO_REVISION,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.api+json",
+      },
+      body: JSON.stringify({ data: { type: "profile", attributes: { ...identifier, locale: klaviyoLocale(language) } } }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`Klaviyo ${resp.status} ${t.slice(0, 200)}`);
+    }
+  }
+
   async function sendKlaviyoEvent({ customer, channel, requestedChannel, location, items }) {
     if (!KLAVIYO_API_KEY) throw new Error("KLAVIYO_API_KEY not set");
     const profile = channel === "sms"
       ? { phone_number: customer.phone, first_name: customer.firstName, last_name: customer.lastName }
       : { email: customer.email, first_name: customer.firstName, last_name: customer.lastName };
+    // Klaviyo Smart Translations read the profile's Locale: keep it in line with the language confirmed at POS
+    profile.locale = klaviyoLocale(languageOf(customer.locale));
     const day = new Date().toISOString().slice(0, 10);
     const uniqueId = crypto
       .createHash("sha256")
