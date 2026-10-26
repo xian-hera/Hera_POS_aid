@@ -72,6 +72,15 @@ export function languageOf(locale) {
   return String(locale || "").toLowerCase().startsWith("fr") ? "fr" : "en";
 }
 
+// Link for the "View product" button: the product page with this variant selected.
+// Products not published on the online store fall back to a store search for the SKU / title.
+const STORE_URL = (process.env.STORE_URL || "https://herabeauty.ca").replace(/\/+$/, "");
+function productUrl(v) {
+  const variantId = String(v.id || "").split("/").pop();
+  if (v.product?.onlineStoreUrl) return `${v.product.onlineStoreUrl}?variant=${variantId}`;
+  return `${STORE_URL}/search?q=${encodeURIComponent(v.sku || v.product?.title || "")}`;
+}
+
 // "Product - Shade" for one item
 const itemLabel = (i) => [i.product_title, i.variant_title].filter(Boolean).join(" - ");
 
@@ -171,6 +180,7 @@ const VARIANT_FIELDS = `
     title
     vendor
     productType
+    handle
     onlineStoreUrl
     featuredMedia { preview { image { url } } }
   }
@@ -469,8 +479,10 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       vendor: v.product?.vendor || "",
       productType: v.product?.productType || "",
       price: v.price || "",
-      image: v.image?.url || v.product?.featuredMedia?.preview?.image?.url || "",
-      url: v.product?.onlineStoreUrl || "",
+      // First product media (the product's main picture); the variant's own picture when there is no product media
+      image: v.product?.featuredMedia?.preview?.image?.url || v.image?.url || "",
+      variantImage: v.image?.url || "",
+      url: productUrl(v),
       tracked: Boolean(v.inventoryItem?.tracked),
       // null when the variant is not stocked at this location at all
       available: level ? (level.quantities?.[0]?.quantity ?? 0) : null,
@@ -862,7 +874,9 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
             variant_title: variant.variantTitle,
             vendor: variant.vendor,
             price: variant.price,
+            price_display: variant.price ? `$${Number(variant.price).toFixed(2)}` : "",
             image_url: variant.image,
+            variant_image_url: variant.variantImage,
             url: variant.url,
             available: variant.available,
           }));

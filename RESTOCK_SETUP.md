@@ -125,7 +125,7 @@
 | `first_product_title`、`first_variant_title`、`first_image_url` | 第一件商品 |
 | `items_text` | 所有到货商品，用逗号连起来，例如 `Wig Pop Nadia - #1B, Aphogee Shampoo 16oz, Lip Gloss - Rose` |
 | `items_short` | 短信用：最多列 2 件，其余写 "and N more"，例如 `Wig Pop Nadia - #1B, Aphogee Shampoo 16oz and 1 more` |
-| `items` | 列表，每项包含 `sku`、`product_title`、`variant_title`、`vendor`、`price`、`image_url`、`url`、`available`、`variant_id` |
+| `items` | 列表，每件到货商品一项，包含：`product_title`、`variant_title`、`sku`、`vendor`、`price`（如 `11.99`）、`price_display`（如 `$11.99`）、`image_url`（商品的第一张图 / first media；商品没有图片时用 variant 图片）、`variant_image_url`（variant 自己的图片，可能为空）、`url`（网店商品页并选中该 variant；商品没在网店上架时，改为网店搜索这个 SKU）、`available`、`variant_id` |
 | `shopify_customer_id` | Shopify 顾客 ID |
 
 - 同一天、同一组商品重复发送时，Klaviyo 会按 `unique_id` 去重，不会重复触发。
