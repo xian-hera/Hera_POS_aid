@@ -28,16 +28,19 @@
    - 点 Add 后，商品会进入下方的 "Notify list"，可以点 Remove 删掉。一次最多 30 个商品。
    - 扫码时，如果正好只匹配到一个 variant，会自动加入，不用再点 Add。
    - 没登录顾客时也能先选商品，但必须登录顾客后才能进入下一页。
-4. **第 2 页 · 顾客**
-   - 显示顾客的 Email 和 Phone。有值就直接显示；没有值就出现输入框，填好后点 Save，会写进 Shopify 顾客资料。**已有的值不能在 POS 上修改**，这是为了防止误改或冒用账户。
-   - 显示 Email 和 SMS 的订阅状态。未订阅的旁边有 **Subscribe** 按钮，只有在顾客明确同意接收 Hera Beauté 营销信息时才点。
-   - **Notify by**：在 Email 和 SMS 中选一个。只有一种联系方式时会自动选上；两种都有时必须让顾客选。
-   - 点 **Confirm**，显示 "Saved" 就完成了。
-   - **选了 SMS 但顾客未订阅 SMS 时**，点 Confirm 不会马上保存，而是先出现黄色提示：短信只能发给已订阅 SMS 的顾客，请告诉顾客，想收短信就要订阅 SMS，否则会改用 Email 通知。提示下面有三个按钮：
-     - **Customer agrees: subscribe to SMS and confirm**：顾客同意，先订阅 SMS 再保存，之后用短信通知。
-     - **Notify by email instead and confirm**：改用 Email 通知并保存。顾客没有 email 时，这个按钮不出现，界面会提示先在上方补填 email。
-     - **Back**：返回修改。
-   - **选了 SMS，并且顾客还没订阅 SMS，或者 cashier 刚在这一页帮顾客点了 SMS 的 Subscribe** 时，第 2 页会显示红色提示 "IMPORTANT: Remind Customer to reply YES."，下面有一个红色按钮 **I reminded the customer to reply YES**。**cashier 必须先点这个按钮，Confirm 和 "subscribe to SMS and confirm" 才能点。** 改选 Email 再改回 SMS，或者换了顾客，都要重新确认。顾客之前已经订阅过 SMS 的，不显示。Klaviyo 开着 SMS 双重确认，新订阅的顾客会收到一条 "Please reply YES…" 短信，cashier 要请顾客当场回复 YES，否则到货短信发不出去。
+4. **第 2 页 · 顾客**（同一页内按操作顺序逐步出现）
+   - **① 通知方式**：先只显示 "How does the customer want to be notified?"，让顾客选 **Email** 或 **SMS (text message)**。选中的按钮是实心并带 ✓，另一个是普通样式。
+   - 选好后，下面同时出现 ② 和 ③：
+   - **② 确认语言** "Confirm customer's language"：**English** / **Français** 两个按钮，选中的同样是实心带 ✓，下面还有一行 "Selected: …"。会按顾客在 Shopify 的语言（locale）预选，fr 开头的选 Français，其他或为空选 English。Shopify 的语言来自顾客浏览网站时的设置，没访问过网站的顾客可能不准，所以要 cashier 当面确认，可以改。确认后的语言会写回顾客的 Shopify 资料，并发给 Klaviyo（event 属性 `language`）。
+   - **③ 对应渠道的联系方式**：只显示所选渠道那一项，选 Email 显示邮箱，选 SMS 显示手机号。
+     - **没有值**：显示输入框和 Save 按钮。
+     - **有值**：显示号码或邮箱，旁边有 **Edit**。点 Edit 可以改成顾客想用的新地址，保存后**会同步修改 Shopify 顾客资料**里的 email 或电话。
+     - **未订阅**：显示 **Subscribe** 按钮。只在顾客同意时才点。
+     - **已填且已订阅**：不需要再做什么，可以直接 Confirm。
+   - **Email**：必须**已订阅 email** 才能 Confirm；顾客不同意订阅时，可以改选 SMS。
+   - **SMS**：必须**已订阅 SMS** 才能 Confirm，因为 Klaviyo 只给订阅者发短信；也可以改选 Email。cashier **刚点了 SMS 的 Subscribe** 后，会出现红色提示 "IMPORTANT: Remind Customer to reply YES."，下面有一个红色按钮 **I reminded the customer to reply YES**，**必须先点它才能 Confirm**。改选 Email 再改回 SMS、换了手机号或换了顾客，都要重新确认。Klaviyo 开着 SMS 双重确认，新订阅的顾客会收到 "Please reply YES…" 短信，不回复 YES 就收不到到货短信。
+   - 联系方式那一行依次是：邮箱或号码 · **Edit** · 绿色 **Subscribed**（已订阅）或 **Subscribe** 按钮（未订阅，下面一行小字 "Only tap Subscribe with customer's consent."）。
+   - 还差步骤时，Confirm 显示为灰色，上方用一句话说明还差什么；cashier 点灰色的 Confirm 不会保存，只会把这句话变成红色。点 **Confirm** 后进入完成页，显示 "Saved"、通知方式和语言；点 **OK** 关闭弹窗。
 5. 页面上有简短的英文提示，指导 cashier 每一步该做什么。
 
 ## 1.3 搜索是怎么做到按 variant 显示的
@@ -110,6 +113,7 @@
 | 属性 | 例子 |
 |---|---|
 | `channel` | 实际通知方式 `email` / `sms`（Klaviyo flow 按这个值分流） |
+| `language` | `en` / `fr`，cashier 在 POS 上确认的语言（存在顾客的 Shopify locale 里）。Klaviyo 里可以按它分英文、法文模板 |
 | `requested_channel` | 登记时选的方式。和 `channel` 不同，就说明是 SMS 未订阅、改用了 Email |
 | `store_code` | `MTL10` |
 | `store_name` | `Chambly Longueuil` |
@@ -378,9 +382,12 @@ Shopify 后台 → **Apps** → **Flow** → **Settings** → **Secrets** → �
 | 7 | 同一顾客、同一商品登记两次 | 完成页提示 "already on the list"，不会出现重复记录 |
 | 8 | 假发（WIG）库存为 1、全局阈值大于 1 | 演练的 `preview` 里有这件假发 |
 | 9 | 普通商品库存低于全局阈值 | 不在 `preview` 里 |
-| 10 | 选 SMS，顾客未订阅 SMS，点 Confirm | 出现黄色提示和三个按钮，此时还没有保存 |
-| 11 | 在上面的提示里点 "Notify by email instead" | 保存成功，完成页显示用 email 通知 |
-| 12 | 在上面的提示里点 "subscribe to SMS and confirm" | 顾客变为已订阅 SMS，保存成功，完成页显示用短信通知 |
+| 10 | 进入第 2 页 | 只显示通知方式（Email / SMS），语言和联系方式还没出现 |
+| 11 | 选 SMS | 出现语言（按 Shopify 预选）和手机号两项；选中的按钮实心带 ✓ |
+| 12 | 选 SMS，顾客未订阅 SMS | Confirm 不能点，上方提示需要订阅或改选 Email |
+| 13 | 点 SMS 的 Subscribe | 出现红色 "Remind Customer to reply YES"，点红色按钮确认后 Confirm 才能点 |
+| 14 | 点邮箱旁的 Edit，改成新邮箱并保存 | Shopify 顾客资料里的 email 被替换 |
+| 15 | 改选语言后 Confirm | 完成页显示该语言；Shopify 顾客的语言被更新 |
 
 ---
 
@@ -428,5 +435,5 @@ Render → Environment 修改 `RESTOCK_THRESHOLD` 或 `RESTOCK_TYPE_THRESHOLDS`�
    注意：Shopify 显示"已订阅"不代表 Klaviyo 已确认。顾客没回复 YES 时，后端无法自动改用 Email，这条短信就不会送达。
 2. **只会通知登记时的那家门店。** 其他门店有货不会触发通知。
 3. **检查频率是每天两次**（10:00 和 16:00），不是到货即时通知。
-4. **只能补填、不能修改已有的 Email / Phone。** 顾客资料已有值时，POS 上不能改，需要到 Shopify 后台修改。
+4. **POS 上可以修改顾客的 Email / Phone。** 点 Edit 保存后会直接替换 Shopify 顾客资料里的值，所以 cashier 要当面跟顾客核对。新邮箱或新电话如果已被另一位顾客使用，Shopify 会拒绝，POS 上会显示原因。
 5. **扩展还没有在真实 POS 设备上运行过。** 代码已经通过 Shopify 官方类型检查和模拟测试，但真实设备上的表现（特别是搜索）要在步骤 8 和第三部分的测试中确认。有任何问题，把截图或 Render 日志发给我。

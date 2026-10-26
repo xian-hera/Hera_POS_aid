@@ -67,6 +67,11 @@ export function parseTypeThresholds(raw) {
   return map;
 }
 
+// Shopify customer locale → "fr" or "en" (empty or anything else = English)
+export function languageOf(locale) {
+  return String(locale || "").toLowerCase().startsWith("fr") ? "fr" : "en";
+}
+
 // "Product - Shade" for one item
 const itemLabel = (i) => [i.product_title, i.variant_title].filter(Boolean).join(" - ");
 
@@ -116,6 +121,7 @@ const RESTOCK_CUSTOMER_QUERY = `
       id
       firstName
       lastName
+      locale
       defaultEmailAddress { emailAddress marketingState }
       defaultPhoneNumber { phoneNumber }
       smsMarketingConsent { marketingState }
@@ -374,6 +380,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       id: customerId,
       firstName: c.firstName || "",
       lastName: c.lastName || "",
+      locale: c.locale || "",
       email: c.defaultEmailAddress?.emailAddress || null,
       emailState: c.defaultEmailAddress?.marketingState || null,
       phone: c.defaultPhoneNumber?.phoneNumber || null,
@@ -393,6 +400,8 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
     smsSubscribed: c.smsState === "SUBSCRIBED",
     smsState: c.smsState,
     waiting: c.waiting,
+    locale: c.locale,
+    language: languageOf(c.locale),
   });
 
   async function saveWaitingList(customerId, list) {
@@ -504,7 +513,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
     }
   });
 
-  // Fill in a missing email or phone. Existing values are never replaced from the POS.
+  // Add or change the customer's email / phone (the cashier types what the customer wants).
   app.post("/api/restock/contact", posLimit, requirePosAuth, async (req, res) => {
     const customerId = String(req.body?.customerId ?? "");
     if (!isNumericId(customerId)) return badRequest(res, "Invalid customer");
@@ -520,21 +529,18 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       const current = await loadCustomer(customerId);
       if (!current) return res.status(404).json({ error: "Customer not found" });
       const input = { id: gid("Customer", customerId) };
-      if (email) {
-        if (current.email) return res.status(409).json({ error: "This customer already has an email address" });
-        input.email = email;
-      }
-      if (phone) {
-        if (current.phone) return res.status(409).json({ error: "This customer already has a phone number" });
-        input.phone = phone;
-      }
+      if (email && email !== (current.email || "").toLowerCase()) input.email = email;
+      if (phone && phone !== current.phone) input.phone = phone;
+      if (Object.keys(input).length === 1) return res.json(publicCustomer(current)); // nothing changed
       try {
         await gqlChecked(CUSTOMER_UPDATE, { input }, "customerUpdate");
       } catch (err) {
         if (err.userErrors) return res.status(400).json({ error: err.message });
         throw err;
       }
-      console.log(`[restock] contact added for customer ${customerId} (${Object.keys(input).filter((k) => k !== "id").join(", ")}) by ${req.posUser}`);
+      const changed = Object.keys(input).filter((k) => k !== "id")
+        .map((k) => `${k} ${current[k] ? "changed" : "added"}`).join(", ");
+      console.log(`[restock] customer ${customerId}: ${changed} at POS by ${req.posUser}`);
       const c = await loadCustomer(customerId);
       return res.json(publicCustomer(c));
     } catch (err) {
@@ -604,6 +610,8 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
     const channel = req.body?.channel;
     const variantIds = [...new Set((Array.isArray(req.body?.variantIds) ? req.body.variantIds : []).map(String))];
     const staffId = isNumericId(req.body?.staffId) ? String(req.body.staffId) : "";
+    // Language confirmed by the cashier ("en" / "fr"); saved as the customer's Shopify locale
+    const language = req.body?.language === "fr" ? "fr" : req.body?.language === "en" ? "en" : null;
 
     if (!isNumericId(customerId)) return badRequest(res, "Invalid customer");
     if (!isNumericId(locationId)) return badRequest(res, "Invalid location");
@@ -623,6 +631,16 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
         if (!customer) return { status: 404, body: { error: "Customer not found" } };
         if (channel === "email" && !customer.email) return { status: 400, body: { error: "Add an email address first" } };
         if (channel === "sms" && !customer.phone) return { status: 400, body: { error: "Add a phone number first" } };
+
+        // Save the confirmed language (only when it differs, so "en-CA" is not replaced by "en")
+        if (language && languageOf(customer.locale) !== language) {
+          try {
+            await gqlChecked(CUSTOMER_UPDATE, { input: { id: gid("Customer", customerId), locale: language } }, "customerUpdate");
+            console.log(`[restock] customer ${customerId}: language set to ${language} at POS`);
+          } catch (err) {
+            console.warn(`[restock] could not save language for customer ${customerId}: ${err.message}`);
+          }
+        }
 
         const now = isoNow();
         let added = 0;
@@ -668,7 +686,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
         }
 
         await saveWaitingList(customerId, waiting);
-        return { status: 200, body: { ok: true, added, updated, store: location.name, channel } };
+        return { status: 200, body: { ok: true, added, updated, store: location.name, channel, language: language || languageOf(customer.locale) } };
       });
 
       if (result.status === 200) {
@@ -703,6 +721,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
           properties: {
             channel,
             requested_channel: requestedChannel || channel,
+            language: languageOf(customer.locale),
             store_code: location.code,
             store_name: location.name,
             store_address: location.address,

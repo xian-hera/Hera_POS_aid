@@ -1,0 +1,209 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Restock Notify – page 2</title><style>
+  :root {
+    --bg: #ececec; --frame: #1a1a1a; --surface: #fff; --text: #1a1a1a; --sub: #6b6b6b;
+    --line: #e3e3e3; --primary: #1a1a1a; --primary-text: #fff; --btn: #f1f1f1;
+    --warn-bg: #fff5d6; --warn-line: #f0c94b; --crit-bg: #fde8e8; --crit-line: #e07070; --crit-text: #b42318;
+    --ok-bg: #e5f6ea; --ok-line: #5fbf7f; --ok-text: #1f7a3c; --neutral-badge: #ededed;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header.top { padding: 28px 24px 8px; max-width: 1180px; margin: 0 auto; }
+  header.top h1 { margin: 0 0 6px; font-size: 24px; }
+  header.top p { margin: 0; color: var(--sub); max-width: 760px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 28px; padding: 20px 24px 48px; max-width: 1180px; margin: 0 auto; }
+  .shot { display: flex; flex-direction: column; gap: 10px; }
+  .label { font-weight: 600; font-size: 14px; }
+  .label span { display: inline-block; background: #1a1a1a; color: #fff; border-radius: 6px; padding: 1px 7px; margin-right: 6px; font-size: 12px; }
+  .note { color: var(--sub); font-size: 13px; margin-top: -4px; }
+  .device { background: var(--frame); border-radius: 22px; padding: 12px; }
+  .screen { background: var(--surface); border-radius: 12px; overflow: hidden; min-height: 300px; }
+  .bar { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .x { width: 28px; height: 28px; border-radius: 50%; background: var(--btn); display: grid; place-items: center; font-size: 14px; color: #444; flex: none; }
+  .bar h2 { margin: 0; font-size: 17px; }
+  .bar small { display: block; color: var(--sub); font-size: 12px; }
+  .body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .sub { color: var(--sub); }
+  .small { font-size: 12.5px; }
+  .strong { font-weight: 600; }
+  .banner { border: 1px solid; border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+  .banner b { display: block; margin-bottom: 2px; }
+  .warn { background: var(--warn-bg); border-color: var(--warn-line); }
+  .crit { background: var(--crit-bg); border-color: var(--crit-line); }
+  .ok { background: var(--ok-bg); border-color: var(--ok-line); }
+  .search { display: flex; align-items: center; gap: 8px; border: 1px solid #cfcfcf; border-radius: 10px; padding: 9px 12px; color: var(--sub); }
+  .search.filled { color: var(--text); }
+  .mag { color: #1a1a1a; flex: none; }
+  .section h3 { margin: 0 0 10px; font-size: 15px; }
+  .section { border-top: 1px solid var(--line); padding-top: 12px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .row + .row { margin-top: 12px; }
+  .left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .img { width: 56px; height: 56px; border-radius: 8px; background: #f3f3f3 center/contain no-repeat; flex: none; border: 1px solid var(--line); }
+  .meta { display: flex; flex-direction: column; min-width: 0; }
+  .meta .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn { border: 0; border-radius: 9px; padding: 9px 14px; font: inherit; font-weight: 600; background: var(--btn); color: var(--text); white-space: nowrap; }
+  .btn.primary { background: var(--primary); color: var(--primary-text); }
+  .btn.critical { color: var(--crit-text); }
+  .btn.disabled { opacity: .45; }
+  .btn.block { width: 100%; padding: 12px; }
+  .badge { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok-text); border: 0; }
+  .badge.neutral { background: var(--neutral-badge); color: #555; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .input { border: 1px solid #cfcfcf; border-radius: 10px; padding: 9px 12px; color: var(--sub); }
+  .input.err { border-color: var(--crit-line); }
+  .errtxt { color: var(--crit-text); font-size: 12.5px; margin-top: 4px; }
+  .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .stack-s { display: flex; flex-direction: column; gap: 8px; }
+  /* POS home tile */
+  .home { background: #f6f6f6; padding: 16px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; min-height: 220px; }
+  .tile { background: #fff; border-radius: 10px; padding: 12px; min-height: 90px; border: 1px solid var(--line); display: flex; flex-direction: column; justify-content: flex-end; }
+  .tile.dim { color: #aaa; }
+  .tile.me { border: 2px solid #1a1a1a; }
+  .tile b { font-size: 14px; }
+  .tile small { color: var(--sub); font-size: 12px; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 0 24px 40px; color: var(--sub); font-size: 13px; }
+  .btn.secondary-look { background:#f1f1f1; color:#8a8a8a; }
+  .pill { display:inline-block; border-radius:999px; padding:4px 12px; font-size:13px; font-weight:600; background:#d9f2e1; color:#1f7a3c; }
+</style></head><body>
+<header class="top"><h1>Restock Notify：第 2 页和完成页</h1><p>文字和出现条件直接取自当前代码，配色和间距是近似效果，真机会用 Shopify POS 自己的样式。选中的按钮是实心并带 ✓。还差步骤时 Confirm 显示为灰色，点它不会保存，只会把上方那句话变红。</p></header>
+<main class="grid">
+<div class="shot"><div class="label"><span>A</span>加载中</div><div class="note">点 Next 之后，读取顾客资料时</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="sub">Loading customer...</div>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>B</span>加载失败 / 未登录顾客</div><div class="note">两种情况合在一张图里，实际同一时间只出现一种</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="banner warn"><b>No customer logged in</b>Log in the customer, then come back to this screen.</div>
+<div class="banner crit"><b>Could not load the customer</b>Shopify did not respond, please try again</div>
+<button class="btn" style="align-self:flex-start">Try again</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>1</span>① 刚进入：只问通知方式</div><div class="note">语言和联系方式要等选了通知方式才出现</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn ">Email</button><button class="btn ">SMS (text message)</button></div><div class="sub">Ask the customer: email or text message?</div></div></div>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>2</span>Email：有邮箱，未订阅</div><div class="note">同一行：邮箱 · Edit · Subscribe；Confirm 显示为灰色</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ Email</button><button class="btn ">SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ English</button><button class="btn ">Français</button></div>
+<div class="strong">Selected: English</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Email</h3><div class="stack-s"><div class="inline"><span class="strong">annie@example.com</span><button class="btn">Edit</button><button class="btn primary">Subscribe</button></div><div class="sub small">Only tap Subscribe with customer's consent.</div></div></div>
+<div class="sub">The customer must be subscribed to email: tap Subscribe above if the customer agrees, or choose SMS.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>2b</span>Email：未订阅时点了 Confirm</div><div class="note">不会保存，上面那句话变成红色</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ Email</button><button class="btn ">SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ English</button><button class="btn ">Français</button></div>
+<div class="strong">Selected: English</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Email</h3><div class="stack-s"><div class="inline"><span class="strong">annie@example.com</span><button class="btn">Edit</button><button class="btn primary">Subscribe</button></div><div class="sub small">Only tap Subscribe with customer's consent.</div></div></div>
+<div class="banner crit">The customer must be subscribed to email: tap Subscribe above if the customer agrees, or choose SMS.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>3</span>Email：没有邮箱</div><div class="note">填写后点 Save email；保存后同一行出现 Edit 和 Subscribe</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ Email</button><button class="btn ">SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ English</button><button class="btn ">Français</button></div>
+<div class="strong">Selected: English</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Email</h3><div class="stack-s"><div class="field"><label>Email address</label><div class="input " style="color:#1a1a1a">annie@example.com</div></div><div class="inline"><button class="btn primary">Save email</button></div></div></div>
+<div class="sub">Add the customer's email address above.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>4</span>Email：点了 Edit，正在改邮箱</div><div class="note">保存会替换 Shopify 里的 email；输入有误时显示红字</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ Email</button><button class="btn ">SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ English</button><button class="btn ">Français</button></div>
+<div class="strong">Selected: English</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Email</h3><div class="stack-s"><div class="field"><label>New email address</label><div class="input err" style="color:#1a1a1a">annie.new@</div><div class="errtxt">This email address does not look right</div></div><div class="sub small">Saving replaces annie@example.com in the customer's Shopify profile.</div><div class="inline"><button class="btn primary">Save email</button><button class="btn">Cancel</button></div></div></div>
+<div class="sub">Save or cancel the email change above.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>5</span>Email：已填且已订阅</div><div class="note">同一行：邮箱 · Edit · 绿色 Subscribed；可以 Confirm</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ Email</button><button class="btn ">SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ English</button><button class="btn ">Français</button></div>
+<div class="strong">Selected: English</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Email</h3><div class="stack-s"><div class="inline"><span class="strong">annie@example.com</span><button class="btn">Edit</button><span class="pill">Subscribed</span></div></div></div>
+<div class="sub small">This customer is already waiting for 1 product (all stores).</div>
+<button class="btn primary block">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>6</span>SMS：没有手机号（语言预选 Français）</div><div class="note">顾客 Shopify 语言是 fr-CA，所以预选 Français</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn ">Email</button><button class="btn primary">✓ SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn ">English</button><button class="btn primary">✓ Français</button></div>
+<div class="strong">Selected: Français</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Mobile number (SMS)</h3><div class="stack-s"><div class="field"><label>Mobile number</label><div class="input " style="color:#1a1a1a">514 555 1234</div></div><div class="inline"><button class="btn primary">Save phone</button></div></div></div>
+<div class="sub">Add the customer's mobile number above.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>7</span>SMS：有手机号，未订阅</div><div class="note">同一行：号码 · Edit · Subscribe；点 Confirm 会把提示变红</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn ">Email</button><button class="btn primary">✓ SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn ">English</button><button class="btn primary">✓ Français</button></div>
+<div class="strong">Selected: Français</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Mobile number (SMS)</h3><div class="stack-s"><div class="inline"><span class="strong">+15145551234</span><button class="btn">Edit</button><button class="btn primary">Subscribe</button></div><div class="sub small">Only tap Subscribe with customer's consent.</div></div></div>
+<div class="sub">Text messages need an SMS subscription: tap Subscribe above if the customer agrees, or choose Email.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>8</span>SMS：刚点了 Subscribe</div><div class="note">出现红色提醒，必须点红色按钮确认</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn ">Email</button><button class="btn primary">✓ SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn ">English</button><button class="btn primary">✓ Français</button></div>
+<div class="strong">Selected: Français</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Mobile number (SMS)</h3><div class="stack-s"><div class="inline"><span class="strong">+15145551234</span><button class="btn">Edit</button><span class="pill">Subscribed</span></div></div></div>
+<div class="banner crit"><b>IMPORTANT: Remind Customer to reply YES.</b>After subscribing to SMS, customer receives a text from Hera Beauté asking to reply YES. Ask customer to check their phone and reply YES now. Without YES, the restock text cannot be sent.</div>
+<button class="btn primary block" style="background:#b42318">I reminded the customer to reply YES</button>
+<div class="sub">Tap "I reminded the customer to reply YES" above to continue.</div><button class="btn block secondary-look">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>9</span>SMS：已确认提醒</div><div class="note">红色按钮变成灰色 ✓，可以 Confirm</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn ">Email</button><button class="btn primary">✓ SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn ">English</button><button class="btn primary">✓ Français</button></div>
+<div class="strong">Selected: Français</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Mobile number (SMS)</h3><div class="stack-s"><div class="inline"><span class="strong">+15145551234</span><button class="btn">Edit</button><span class="pill">Subscribed</span></div></div></div>
+<div class="banner crit"><b>IMPORTANT: Remind Customer to reply YES.</b>After subscribing to SMS, customer receives a text from Hera Beauté asking to reply YES. Ask customer to check their phone and reply YES now. Without YES, the restock text cannot be sent.</div>
+<button class="btn block disabled">✓ Customer reminded to reply YES</button>
+<button class="btn primary block">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>10</span>保存失败</div><div class="note">例如网络或权限问题</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2><small>2 of 2 · Customer</small></div></div><div class="body">
+<button class="btn">Back to products (2)</button>
+<div class="strong">Annie Test</div>
+<div class="section"><h3>1. How does the customer want to be notified?</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ Email</button><button class="btn ">SMS (text message)</button></div></div></div>
+<div class="section"><h3>2. Confirm customer's language</h3><div class="stack-s"><div class="inline"><button class="btn primary">✓ English</button><button class="btn ">Français</button></div>
+<div class="strong">Selected: English</div><div class="sub small">Change the language if customer speaking the other one than selected.</div></div></div>
+<div class="section"><h3>3. Email</h3><div class="stack-s"><div class="inline"><span class="strong">annie@example.com</span><button class="btn">Edit</button><span class="pill">Subscribed</span></div></div></div>
+<div class="banner crit"><b>Not saved</b>This POS device is not authorized. Please make sure the staff account is logged in.</div>
+<button class="btn primary block">Confirm (2 products)</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>11</span>完成页：SMS、法语</div><div class="note">点 OK 关闭弹窗</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2></div></div><div class="body">
+<div class="banner ok"><b>Saved</b>2 products on the notify list for Chambly | Longueuil.</div>
+<div>The customer will receive a text message in Français when the product is back in stock at this store.</div>
+<button class="btn primary block">OK</button>
+</div></div></div></div>
+<div class="shot"><div class="label"><span>12</span>完成页：Email、英语，其中 1 件已在名单上</div><div class="note">重复登记的商品只更新通知方式</div>
+<div class="device"><div class="screen"><div class="bar"><div class="x">✕</div><div><h2>Restock Notify</h2></div></div><div class="body">
+<div class="banner ok"><b>Saved</b>2 products on the notify list for Chambly | Longueuil.</div>
+<div>The customer will receive an email in English when the product is back in stock at this store.</div>
+<div class="sub">1 of them was already on the list: only the notification method was updated.</div>
+<button class="btn primary block">OK</button>
+</div></div></div></div>
+
+</main></body></html>

@@ -123,8 +123,8 @@ function ReplyYesWarning({ acknowledged, onAcknowledge }) {
   return (
     <s-stack direction="block" gap="small">
       <s-banner tone="critical" heading="IMPORTANT: Remind Customer to reply YES.">
-        After subscribing to SMS, the customer receives a text from Hera Beauté asking to reply YES.
-        Ask the customer to check their phone and reply YES now. Without YES, the restock text cannot be sent.
+        After subscribing to SMS, customer receives a text from Hera Beauté asking to reply YES.
+        Ask customer to check their phone and reply YES now. Without YES, the restock text cannot be sent.
       </s-banner>
       {acknowledged ? (
         <s-button disabled>✓ Customer reminded to reply YES</s-button>
@@ -134,6 +134,18 @@ function ReplyYesWarning({ acknowledged, onAcknowledge }) {
         </s-button>
       )}
     </s-stack>
+  );
+}
+
+const LANGUAGE_NAMES = { en: 'English', fr: 'Français' };
+
+// A choice where exactly one option is selected: the selected one is filled (primary) with a ✓,
+// the other one is plain, so the cashier always sees which one is active.
+function ChoiceButton({ selected, disabled, onClick, children }) {
+  return (
+    <s-button variant={selected ? 'primary' : 'secondary'} disabled={disabled} onClick={onClick}>
+      {selected ? '✓ ' : ''}{children}
+    </s-button>
   );
 }
 
@@ -207,8 +219,8 @@ function Extension() {
   const [channel, setChannel] = useState(null);
   const [confirmError, setConfirmError] = useState('');
   const [doneInfo, setDoneInfo] = useState(null);
-  // SMS chosen but the customer is not subscribed to SMS: ask the cashier before saving
-  const [smsPrompt, setSmsPrompt] = useState(false);
+  const [language, setLanguage] = useState(null); // 'en' | 'fr', confirmed by the cashier
+  const [editing, setEditing] = useState({ email: false, phone: false }); // changing an existing value
   // SMS subscribed from this screen just now: the customer still has to reply YES to Klaviyo's text
   const [smsJustSubscribed, setSmsJustSubscribed] = useState(false);
   // The cashier tapped "I reminded the customer to reply YES"
@@ -309,16 +321,7 @@ function Extension() {
   };
 
   // ── customer ──
-  const applyCustomer = (data) => {
-    setCustomer(data);
-    setChannel((prev) => {
-      if (prev === 'email' && data.email) return prev;
-      if (prev === 'sms' && data.phone) return prev;
-      if (data.email && !data.phone) return 'email';
-      if (data.phone && !data.email) return 'sms';
-      return null; // both (customer chooses) or none (add one first)
-    });
-  };
+  const applyCustomer = (data) => setCustomer(data);
 
   const loadCustomer = async () => {
     if (!customerId) return;
@@ -327,6 +330,8 @@ function Extension() {
     try {
       const data = await api('customer', { customerId });
       applyCustomer(data);
+      // Pre-select the language from the Shopify profile (empty = English); the cashier confirms it
+      setLanguage(data.language === 'fr' ? 'fr' : 'en');
       setCustomerState('ready');
     } catch (err) {
       setCustomerError(err.message || 'Could not load the customer.');
@@ -334,23 +339,50 @@ function Extension() {
     }
   };
 
-  const goToCustomer = () => {
-    setConfirmError('');
+  const resetCustomerChoices = () => {
+    setChannel(null);
+    setLanguage(null);
+    setEditing({ email: false, phone: false });
+    setEmailInput('');
+    setPhoneInput('');
     setFieldError({ email: '', phone: '' });
+    setSmsJustSubscribed(false);
+    setYesAck(false);
+    setConfirmError('');
+  };
+
+  const goToCustomer = () => {
+    resetCustomerChoices();
     setStep('customer');
     loadCustomer();
   };
 
   useEffect(() => {
-    // Customer changed while on the customer page: reload
-    setSmsJustSubscribed(false);
-    setYesAck(false);
+    // Customer changed while on the customer page: start the page again
+    resetCustomerChoices();
     if (step === 'customer') {
       setCustomer(null);
-      setChannel(null);
       if (customerId) loadCustomer(); else setCustomerState('idle');
     }
   }, [customerId]);
+
+  const chooseChannel = (next) => {
+    if (busy) return;
+    setChannel(next);
+    setYesAck(false);
+    setConfirmError('');
+  };
+
+  const startEdit = (kind) => {
+    setFieldError((e) => ({ ...e, [kind]: '' }));
+    if (kind === 'email') setEmailInput(customer?.email || ''); else setPhoneInput(customer?.phone || '');
+    setEditing((e) => ({ ...e, [kind]: true }));
+  };
+
+  const cancelEdit = (kind) => {
+    setFieldError((e) => ({ ...e, [kind]: '' }));
+    setEditing((e) => ({ ...e, [kind]: false }));
+  };
 
   const saveContact = async (kind) => {
     const value = kind === 'email' ? emailInput : phoneInput;
@@ -361,9 +393,16 @@ function Extension() {
     setBusy(kind);
     setFieldError((e) => ({ ...e, [kind]: '' }));
     try {
+      const before = kind === 'email' ? customer?.email : customer?.phone;
       const data = await api('contact', { customerId, [kind]: value });
       applyCustomer(data);
+      setEditing((e) => ({ ...e, [kind]: false }));
       if (kind === 'email') setEmailInput(''); else setPhoneInput('');
+      if (kind === 'phone' && data.phone !== before) {
+        // New number: any earlier SMS subscription / reminder was for the old number
+        setSmsJustSubscribed(false);
+        setYesAck(false);
+      }
       shopify.toast.show(kind === 'email' ? 'Email saved' : 'Phone number saved');
     } catch (err) {
       setFieldError((e) => ({ ...e, [kind]: err.message }));
@@ -379,28 +418,49 @@ function Extension() {
       const data = await api('subscribe', { customerId, channel: kind, locationId: String(locationId) });
       applyCustomer(data);
       shopify.toast.show(kind === 'email' ? 'Subscribed to email' : 'Subscribed to SMS');
-      if (kind === 'sms' && data.smsSubscribed) setSmsJustSubscribed(true);
-      return kind === 'email' ? data.emailSubscribed : data.smsSubscribed;
+      if (kind === 'sms' && data.smsSubscribed) {
+        setSmsJustSubscribed(true);
+        setYesAck(false);
+      }
     } catch (err) {
       setConfirmError(err.message);
-      return false;
     } finally {
       setBusy('');
     }
   };
 
-  const submit = async (useChannel) => {
+  // What still blocks Confirm (null = ready)
+  const blocker = (() => {
+    const c = customer;
+    if (!c || !channel || !language || !selected.length) return 'incomplete';
+    const kind = channel === 'email' ? 'email' : 'phone';
+    if (editing[kind]) return channel === 'email' ? 'Save or cancel the email change above.' : 'Save or cancel the phone number change above.';
+    if (channel === 'email' && !c.email) return "Add the customer's email address above.";
+    if (channel === 'email' && !c.emailSubscribed) return 'The customer must be subscribed to email: tap Subscribe above if the customer agrees, or choose SMS.';
+    if (channel === 'sms' && !c.phone) return "Add the customer's mobile number above.";
+    if (channel === 'sms' && !c.smsSubscribed) return 'Text messages need an SMS subscription: tap Subscribe above if the customer agrees, or choose Email.';
+    if (channel === 'sms' && smsJustSubscribed && !yesAck) return 'Tap "I reminded the customer to reply YES" above to continue.';
+    return null;
+  })();
+
+  // Tapping Confirm while something is missing turns the "what is missing" message red
+  // (remembers which message was tapped, so it goes back to grey as soon as the missing step changes)
+  const [blockerTapped, setBlockerTapped] = useState(null);
+  const blockerShown = Boolean(blocker) && blockerTapped === blocker;
+
+  const confirm = async () => {
+    if (blocker || busy) return;
     setBusy('confirm');
     setConfirmError('');
     try {
       const data = await api('submit', {
         customerId,
         locationId: String(locationId),
-        channel: useChannel,
+        channel,
+        language,
         variantIds: selected.map((s) => s.variantId),
         staffId: staffId ? String(staffId) : undefined,
       });
-      setSmsPrompt(false);
       setDoneInfo({ ...data, count: selected.length });
       setStep('done');
     } catch (err) {
@@ -408,34 +468,6 @@ function Extension() {
     } finally {
       setBusy('');
     }
-  };
-
-  // Red "reply YES" reminder: SMS chosen and the customer is not subscribed yet, or was just subscribed here
-  const needYesAck = channel === 'sms' && Boolean(customer) && (!customer.smsSubscribed || smsJustSubscribed);
-
-  const confirm = async () => {
-    if (!channel || !selected.length || busy) return;
-    if (needYesAck && !yesAck) return;
-    // Klaviyo only sends text messages to customers subscribed to SMS
-    if (channel === 'sms' && !customer?.smsSubscribed) {
-      setSmsPrompt(true);
-      return;
-    }
-    await submit(channel);
-  };
-
-  // From the SMS prompt: the customer agrees to SMS
-  const subscribeSmsAndConfirm = async () => {
-    if (busy || !yesAck) return;
-    const ok = await subscribe('sms');
-    if (ok) await submit('sms');
-  };
-
-  // From the SMS prompt: the customer prefers email
-  const confirmWithEmail = async () => {
-    if (busy || !customer?.email) return;
-    setChannel('email');
-    await submit('email');
   };
 
   // "OK" on the done screen closes the modal (back to the POS home screen)
@@ -454,12 +486,8 @@ function Extension() {
     setResults([]);
     setSearchState('idle');
     setCustomer(null);
-    setChannel(null);
     setDoneInfo(null);
-    setConfirmError('');
-    setSmsPrompt(false);
-    setSmsJustSubscribed(false);
-    setYesAck(false);
+    resetCustomerChoices();
     setStep('products');
   };
 
@@ -556,7 +584,7 @@ function Extension() {
                 {doneInfo?.count} product{doneInfo?.count === 1 ? '' : 's'} on the notify list for {doneInfo?.store}.
               </s-banner>
               <s-text>
-                The customer will receive {doneInfo?.channel === 'sms' ? 'a text message' : 'an email'} when the product is back in stock at this store.
+                The customer will receive {doneInfo?.channel === 'sms' ? 'a text message' : 'an email'} in {LANGUAGE_NAMES[doneInfo?.language] || 'English'} when the product is back in stock at this store.
               </s-text>
               {doneInfo?.updated > 0 && (
                 <s-text color="subdued">
@@ -572,9 +600,73 @@ function Extension() {
   }
 
   // ─── Page 2: customer ──────────────────────────────────────────────────────
+  // Shown step by step: 1. channel → then 2. language + 3. contact for that channel → Confirm
   const c = customer;
   const waitingHere = c?.waiting?.length || 0;
-  const canConfirm = Boolean(c && channel && selected.length && !busy && (!needYesAck || yesAck));
+  const contactKind = channel === 'sms' ? 'phone' : 'email';
+
+  const contactSection = () => {
+    if (!c || !channel) return null;
+    const isEmail = channel === 'email';
+    const value = isEmail ? c.email : c.phone;
+    const subscribed = isEmail ? c.emailSubscribed : c.smsSubscribed;
+    const isEditing = editing[contactKind];
+
+    if (!value || isEditing) {
+      return (
+        <s-stack direction="block" gap="small">
+          {isEmail ? (
+            <s-email-field
+              label={value ? 'New email address' : 'Email address'}
+              placeholder="name@example.com"
+              value={emailInput}
+              error={fieldError.email || undefined}
+              onInput={(e) => setEmailInput(e.currentTarget.value)}
+            />
+          ) : (
+            <s-text-field
+              label={value ? 'New mobile number' : 'Mobile number'}
+              placeholder="514 555 1234"
+              value={phoneInput}
+              error={fieldError.phone || undefined}
+              onInput={(e) => setPhoneInput(e.currentTarget.value)}
+            />
+          )}
+          {value && (
+            <s-text type="small" color="subdued">
+              Saving replaces {value} in the customer's Shopify profile.
+            </s-text>
+          )}
+          <s-stack direction="inline" gap="base">
+            <s-button variant="primary" disabled={Boolean(busy)} onClick={() => saveContact(contactKind)}>
+              {busy === contactKind ? 'Saving...' : isEmail ? 'Save email' : 'Save phone'}
+            </s-button>
+            {value && <s-button disabled={Boolean(busy)} onClick={() => cancelEdit(contactKind)}>Cancel</s-button>}
+          </s-stack>
+        </s-stack>
+      );
+    }
+
+    return (
+      <s-stack direction="block" gap="small">
+        {/* One line: value · Edit · green "Subscribed" pill or Subscribe button */}
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-text type="strong">{value}</s-text>
+          <s-button disabled={Boolean(busy)} onClick={() => startEdit(contactKind)}>Edit</s-button>
+          {subscribed ? (
+            <s-badge tone="success">Subscribed</s-badge>
+          ) : (
+            <s-button variant="primary" disabled={Boolean(busy)} onClick={() => subscribe(channel)}>
+              {busy === `sub-${channel}` ? 'Subscribing...' : 'Subscribe'}
+            </s-button>
+          )}
+        </s-stack>
+        {!subscribed && (
+          <s-text type="small" color="subdued">Only tap Subscribe with customer's consent.</s-text>
+        )}
+      </s-stack>
+    );
+  };
 
   return (
     <s-page heading="Restock Notify" subheading="2 of 2 · Customer">
@@ -599,144 +691,73 @@ function Extension() {
             {c && customerState === 'ready' && (
               <>
                 <s-text type="strong">{`${c.firstName} ${c.lastName}`.trim() || 'Customer'}</s-text>
-                <s-text color="subdued">
-                  Check the email and phone with the customer. Add what is missing, then ask how they want to be notified.
-                </s-text>
 
-                <s-section heading="Email">
-                  {c.email ? (
-                    <s-stack direction="block" gap="small">
-                      <s-text>{c.email}</s-text>
-                      <s-stack direction="inline" gap="base" alignItems="center">
-                        {c.emailSubscribed
-                          ? <s-badge tone="success">Subscribed to email</s-badge>
-                          : <s-badge tone="neutral">Not subscribed to email</s-badge>}
-                        {!c.emailSubscribed && (
-                          <s-button disabled={Boolean(busy)} onClick={() => subscribe('email')}>
-                            {busy === 'sub-email' ? 'Subscribing...' : 'Subscribe'}
-                          </s-button>
-                        )}
-                      </s-stack>
-                    </s-stack>
-                  ) : (
-                    <s-stack direction="block" gap="small">
-                      <s-email-field
-                        label="Email address"
-                        placeholder="name@example.com"
-                        value={emailInput}
-                        error={fieldError.email || undefined}
-                        onInput={(e) => setEmailInput(e.currentTarget.value)}
-                      />
-                      <s-button disabled={Boolean(busy)} onClick={() => saveContact('email')}>
-                        {busy === 'email' ? 'Saving...' : 'Save email'}
-                      </s-button>
-                    </s-stack>
-                  )}
-                </s-section>
-
-                <s-section heading="Phone (text messages)">
-                  {c.phone ? (
-                    <s-stack direction="block" gap="small">
-                      <s-text>{c.phone}</s-text>
-                      <s-stack direction="inline" gap="base" alignItems="center">
-                        {c.smsSubscribed
-                          ? <s-badge tone="success">Subscribed to SMS</s-badge>
-                          : <s-badge tone="neutral">Not subscribed to SMS</s-badge>}
-                        {!c.smsSubscribed && (
-                          <s-button disabled={Boolean(busy)} onClick={() => subscribe('sms')}>
-                            {busy === 'sub-sms' ? 'Subscribing...' : 'Subscribe'}
-                          </s-button>
-                        )}
-                      </s-stack>
-                    </s-stack>
-                  ) : (
-                    <s-stack direction="block" gap="small">
-                      <s-text-field
-                        label="Mobile number"
-                        placeholder="514 555 1234"
-                        value={phoneInput}
-                        error={fieldError.phone || undefined}
-                        onInput={(e) => setPhoneInput(e.currentTarget.value)}
-                      />
-                      <s-button disabled={Boolean(busy)} onClick={() => saveContact('phone')}>
-                        {busy === 'phone' ? 'Saving...' : 'Save phone'}
-                      </s-button>
-                    </s-stack>
-                  )}
-                </s-section>
-
-                <s-text type="small" color="subdued">
-                  Only tap Subscribe if the customer agrees to receive Hera Beauté promotions.
-                </s-text>
-
-                <s-section heading="Notify by">
+                <s-section heading="1. How does the customer want to be notified?">
                   <s-stack direction="block" gap="small">
                     <s-stack direction="inline" gap="base">
-                      <s-button
-                        variant={channel === 'email' ? 'primary' : 'secondary'}
-                        disabled={!c.email || Boolean(busy)}
-                        onClick={() => { setChannel('email'); setSmsPrompt(false); setYesAck(false); }}
-                      >
-                        {channel === 'email' ? '✓ Email' : 'Email'}
-                      </s-button>
-                      <s-button
-                        variant={channel === 'sms' ? 'primary' : 'secondary'}
-                        disabled={!c.phone || Boolean(busy)}
-                        onClick={() => { setChannel('sms'); setSmsPrompt(false); setYesAck(false); }}
-                      >
-                        {channel === 'sms' ? '✓ SMS' : 'SMS'}
-                      </s-button>
+                      <ChoiceButton selected={channel === 'email'} disabled={Boolean(busy)} onClick={() => chooseChannel('email')}>
+                        Email
+                      </ChoiceButton>
+                      <ChoiceButton selected={channel === 'sms'} disabled={Boolean(busy)} onClick={() => chooseChannel('sms')}>
+                        SMS (text message)
+                      </ChoiceButton>
                     </s-stack>
-                    {!c.email && !c.phone && (
-                      <s-text color="subdued">Add an email or a phone number first.</s-text>
-                    )}
-                    {c.email && c.phone && !channel && (
-                      <s-text color="subdued">Ask the customer: email or text message?</s-text>
-                    )}
+                    {!channel && <s-text color="subdued">Ask the customer: email or text message?</s-text>}
                   </s-stack>
                 </s-section>
 
-                {needYesAck && <ReplyYesWarning acknowledged={yesAck} onAcknowledge={() => setYesAck(true)} />}
+                {channel && (
+                  <>
+                    <s-section heading="2. Confirm customer's language">
+                      <s-stack direction="block" gap="small">
+                        <s-stack direction="inline" gap="base">
+                          <ChoiceButton selected={language === 'en'} disabled={Boolean(busy)} onClick={() => setLanguage('en')}>
+                            English
+                          </ChoiceButton>
+                          <ChoiceButton selected={language === 'fr'} disabled={Boolean(busy)} onClick={() => setLanguage('fr')}>
+                            Français
+                          </ChoiceButton>
+                        </s-stack>
+                        <s-text type="strong">Selected: {LANGUAGE_NAMES[language] || '—'}</s-text>
+                        <s-text type="small" color="subdued">
+                          Change the language if customer speaking the other one than selected.
+                        </s-text>
+                      </s-stack>
+                    </s-section>
 
-                {waitingHere > 0 && (
-                  <s-text type="small" color="subdued">
-                    This customer is already waiting for {waitingHere} product{waitingHere === 1 ? '' : 's'} (all stores).
-                  </s-text>
-                )}
+                    <s-section heading={channel === 'email' ? '3. Email' : '3. Mobile number (SMS)'}>
+                      {contactSection()}
+                    </s-section>
 
-                {confirmError && <s-banner tone="critical" heading="Not saved">{confirmError}</s-banner>}
-
-                {smsPrompt && channel === 'sms' && !c.smsSubscribed ? (
-                  <s-stack direction="block" gap="base">
-                    <s-banner tone="warning" heading="Not subscribed to SMS">
-                      Text messages can only be sent to customers subscribed to SMS. Tell the customer: to be notified by text, they need to subscribe to SMS. Otherwise they will be notified by email.
-                    </s-banner>
-                    {!yesAck && (
-                      <s-text color="subdued">Tap "I reminded the customer to reply YES" above before subscribing.</s-text>
+                    {channel === 'sms' && smsJustSubscribed && (
+                      <ReplyYesWarning acknowledged={yesAck} onAcknowledge={() => setYesAck(true)} />
                     )}
-                    <s-button variant="primary" disabled={Boolean(busy) || !yesAck} onClick={subscribeSmsAndConfirm}>
-                      {busy === 'sub-sms' || busy === 'confirm' ? 'Saving...' : 'Customer agrees: subscribe to SMS and confirm'}
-                    </s-button>
-                    {c.email ? (
-                      <s-button disabled={Boolean(busy)} onClick={confirmWithEmail}>
-                        Notify by email instead and confirm
-                      </s-button>
-                    ) : (
-                      <s-text color="subdued">
-                        No email on file: add an email address above to notify by email instead.
+
+                    {waitingHere > 0 && (
+                      <s-text type="small" color="subdued">
+                        This customer is already waiting for {waitingHere} product{waitingHere === 1 ? '' : 's'} (all stores).
                       </s-text>
                     )}
-                    <s-button disabled={Boolean(busy)} onClick={() => setSmsPrompt(false)}>Back</s-button>
-                  </s-stack>
-                ) : (
-                  <s-stack direction="block" gap="small">
-                    {needYesAck && !yesAck && (
-                      <s-text color="subdued">Tap "I reminded the customer to reply YES" above to continue.</s-text>
-                    )}
-                    <s-button variant="primary" disabled={!canConfirm} onClick={confirm}>
-                      {busy === 'confirm' ? 'Saving...' : `Confirm (${selected.length} product${selected.length === 1 ? '' : 's'})`}
-                    </s-button>
-                  </s-stack>
+
+                    {confirmError && <s-banner tone="critical" heading="Not saved">{confirmError}</s-banner>}
+
+                    <s-stack direction="block" gap="small">
+                      {blocker && blocker !== 'incomplete' && (
+                        blockerShown
+                          ? <s-banner tone="critical">{blocker}</s-banner>
+                          : <s-text color="subdued">{blocker}</s-text>
+                      )}
+                      {/* While something is missing the button looks inactive (secondary); tapping it only
+                          turns the message above red, it never saves. */}
+                      <s-button
+                        variant={blocker ? 'secondary' : 'primary'}
+                        disabled={Boolean(busy)}
+                        onClick={() => (blocker ? setBlockerTapped(blocker) : confirm())}
+                      >
+                        {busy === 'confirm' ? 'Saving...' : `Confirm (${selected.length} product${selected.length === 1 ? '' : 's'})`}
+                      </s-button>
+                    </s-stack>
+                  </>
                 )}
               </>
             )}

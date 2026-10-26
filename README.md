@@ -33,7 +33,7 @@ Hera_POS_aid/
 | `POST /api/verify` | POS "Customer Login" tile | Checks the card barcode and returns the customer. Requires a Shopify POS session token and is rate-limited (30/min per IP). |
 | `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
-| `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, fill in a missing email / phone, variant search fallback, save the request. POS session token always required. |
+| `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
@@ -100,8 +100,12 @@ A paid card whose activation fails is only logged (`[giftcard] FAILED ...`). Ref
 
 A customer wants a product that is out of stock in the store. The cashier logs the customer in,
 opens **Restock Notify**, searches (name, SKU or barcode, or scans) and taps **Add** on each
-variant, then on page 2 checks the email / phone (fills in what is missing), subscribes the
-customer if they agree, chooses **Email** or **SMS** and confirms.
+variant. Page 2 opens step by step: (1) the customer chooses **Email** or **SMS**; then (2) the
+cashier confirms the customer's language (English / Français, pre-selected from the Shopify locale,
+saved back to the customer and sent to Klaviyo as `language`) and (3) checks the email or mobile
+number for that channel (add, or Edit to replace it in Shopify; Subscribe if the customer agrees).
+Both channels need a subscription (email or SMS) before Confirm; right after subscribing to SMS the cashier must confirm they told the
+customer to reply YES (Klaviyo double opt-in) before Confirm is enabled.
 
 Search is variant-level: the tile uses the POS device's own search, splits each product into its
 variants and keeps only the variants that match (a SKU or barcode gives exactly one line). When the
@@ -130,7 +134,7 @@ SMS needs consent: if SMS is chosen for a customer not subscribed to SMS, the ti
 (subscribe to SMS, or notify by email instead). At notify time, a request for SMS whose customer is not
 subscribed to SMS is sent by email when the customer has an email (otherwise it stays pending).
 
-Klaviyo event properties: `channel` (the channel actually used), `requested_channel` (the one chosen at POS), `store_code`, `store_name`, `store_address`, `store_phone` (e.g. "(450) 670-9777"), `store_phone_e164`, `store_address1`,
+Klaviyo event properties: `channel` (the channel actually used), `requested_channel` (the one chosen at POS), `language` (`en` / `fr`), `store_code`, `store_name`, `store_address`, `store_phone` (e.g. "(450) 670-9777"), `store_phone_e164`, `store_address1`,
 `store_city`, `store_province`, `store_zip`, `item_count`, `first_product_title`, `first_variant_title`,
 `first_image_url`, `items_text` (all items joined with commas), `items_short` (at most 2 items, then "and N more", for SMS), `items[]` (`sku`, `product_title`, `variant_title`, `vendor`, `price`, `image_url`,
 `url`, `available`, `variant_id`), `shopify_customer_id`. The profile is identified by email
