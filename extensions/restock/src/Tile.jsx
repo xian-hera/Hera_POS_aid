@@ -9,7 +9,7 @@ function Extension() {
   return (
     <s-tile
       heading="Restock Notify"
-      subheading="Notify a customer when back in stock"
+      subheading="Log in Customer first"
       onClick={() => shopify.action.presentModal()}
     />
   );

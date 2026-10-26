@@ -37,6 +37,7 @@
      - **Customer agrees: subscribe to SMS and confirm**：顾客同意，先订阅 SMS 再保存，之后用短信通知。
      - **Notify by email instead and confirm**：改用 Email 通知并保存。顾客没有 email 时，这个按钮不出现，界面会提示先在上方补填 email。
      - **Back**：返回修改。
+   - **选了 SMS，并且顾客还没订阅 SMS，或者 cashier 刚在这一页帮顾客点了 SMS 的 Subscribe** 时，第 2 页会显示红色提示 "IMPORTANT: Remind Customer to reply YES."，下面有一个红色按钮 **I reminded the customer to reply YES**。**cashier 必须先点这个按钮，Confirm 和 "subscribe to SMS and confirm" 才能点。** 改选 Email 再改回 SMS，或者换了顾客，都要重新确认。顾客之前已经订阅过 SMS 的，不显示。Klaviyo 开着 SMS 双重确认，新订阅的顾客会收到一条 "Please reply YES…" 短信，cashier 要请顾客当场回复 YES，否则到货短信发不出去。
 5. 页面上有简短的英文提示，指导 cashier 每一步该做什么。
 
 ## 1.3 搜索是怎么做到按 variant 显示的
@@ -117,7 +118,9 @@
 | `store_phone` | `(450) 670-9777`（门店电话，取自 Shopify 门店地址里的 Phone） |
 | `store_phone_e164` | `+14506709777`（同一个电话的国际格式，可用于 `tel:` 链接） |
 | `item_count` | 本次到货的商品数 |
-| `first_product_title`、`first_variant_title`、`first_image_url` | 第一件商品（给短信用，因为短信不能循环列表） |
+| `first_product_title`、`first_variant_title`、`first_image_url` | 第一件商品 |
+| `items_text` | 所有到货商品，用逗号连起来，例如 `Wig Pop Nadia - #1B, Aphogee Shampoo 16oz, Lip Gloss - Rose` |
+| `items_short` | 短信用：最多列 2 件，其余写 "and N more"，例如 `Wig Pop Nadia - #1B, Aphogee Shampoo 16oz and 1 more` |
 | `items` | 列表，每项包含 `sku`、`product_title`、`variant_title`、`vendor`、`price`、`image_url`、`url`、`available`、`variant_id` |
 | `shopify_customer_id` | Shopify 顾客 ID |
 
@@ -303,8 +306,9 @@ Invoke-RestMethod -Method Post -Uri "https://search-0wf4.onrender.com/api/restoc
 1. 新建 flow `Restock Notify - SMS`，Trigger 同样选 **Metric** → **Restock Available**。
 2. **Trigger filters**：`channel` equals `sms`。
 3. Re-entry 同上；加一条 **SMS**，关闭 Smart Sending。
-4. 短信不能循环列表，所以只写第一件商品，例如：
-   `Hera Beauté: {{ event.first_product_title }} is back in stock at {{ event.store_name }}, {{ event.store_address }}.`
+4. 短信不能循环列表，所以用后端拼好的文字 `items_short`（最多 2 件，其余写 "and N more"），例如：
+   `Hera Beauté: {{ event.items_short }} is back in stock at {{ event.store_name }}, {{ event.store_address }}. Questions: {{ event.store_phone }}`
+   想全部列出可以改用 `{{ event.items_text }}`，但商品多时短信会变长，费用也更高。
 5. 设为 Live，开启 flow。
 
 **Klaviyo 设置检查**
@@ -420,6 +424,8 @@ Render → Environment 修改 `RESTOCK_THRESHOLD` 或 `RESTOCK_TYPE_THRESHOLDS`�
 # 第五部分：已知限制和待定事项
 
 1. **SMS 必须已订阅才能收到。** Klaviyo 的 SMS（包括 transactional）都要求顾客已同意接收短信。POS 在 Confirm 时会提醒 cashier；到货时如果仍未订阅，会自动改用 Email（见 1.2、1.5）。
+   另外，Klaviyo 的 SMS list 开着双重确认：顾客在 POS 订阅后，**还要回复 YES** 才算真正订阅。POS 上会用红色提示提醒 cashier。设置位置：Klaviyo → Audience → Lists & segments → SMS 同步的那个 list → Settings → Consent → Opt-in process。Klaviyo 建议保持双重确认。
+   注意：Shopify 显示"已订阅"不代表 Klaviyo 已确认。顾客没回复 YES 时，后端无法自动改用 Email，这条短信就不会送达。
 2. **只会通知登记时的那家门店。** 其他门店有货不会触发通知。
 3. **检查频率是每天两次**（10:00 和 16:00），不是到货即时通知。
 4. **只能补填、不能修改已有的 Email / Phone。** 顾客资料已有值时，POS 上不能改，需要到 Shopify 后台修改。

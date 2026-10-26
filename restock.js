@@ -67,6 +67,21 @@ export function parseTypeThresholds(raw) {
   return map;
 }
 
+// "Product - Shade" for one item
+const itemLabel = (i) => [i.product_title, i.variant_title].filter(Boolean).join(" - ");
+
+// Every item, e.g. "Wig Pop Nadia - #1B, Aphogee Shampoo 16oz"
+export function itemsText(items) {
+  return items.map(itemLabel).join(", ");
+}
+
+// Short version for SMS: at most 2 items, then "and 3 more", e.g. "Wig Pop Nadia - #1B, Aphogee Shampoo 16oz and 3 more"
+export function itemsShort(items, max = 2) {
+  const shown = items.slice(0, max).map(itemLabel).join(", ");
+  const rest = items.length - max;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
 // Location metafield custom.display_name: single line text. Also accepts a list (uses the first value).
 export function displayNameOf(value) {
   const v = String(value ?? "").trim();
@@ -701,6 +716,9 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
             first_product_title: items[0]?.product_title || "",
             first_variant_title: items[0]?.variant_title || "",
             first_image_url: items[0]?.image_url || "",
+            // Ready-made text for SMS (SMS templates cannot loop over items)
+            items_text: itemsText(items),
+            items_short: itemsShort(items),
             items,
             shopify_customer_id: customer.id,
           },

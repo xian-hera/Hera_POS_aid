@@ -116,6 +116,27 @@ async function searchVariants(query, locationId) {
 
 // ─── Small UI pieces ─────────────────────────────────────────────────────────
 
+// Klaviyo asks every new SMS subscriber to confirm by replying YES (double opt-in).
+// Without that reply no restock text can be sent, so the cashier must tell the customer
+// and tap the button below before the request can be saved.
+function ReplyYesWarning({ acknowledged, onAcknowledge }) {
+  return (
+    <s-stack direction="block" gap="small">
+      <s-banner tone="critical" heading="IMPORTANT: Remind Customer to reply YES.">
+        After subscribing to SMS, the customer receives a text from Hera Beauté asking to reply YES.
+        Ask the customer to check their phone and reply YES now. Without YES, the restock text cannot be sent.
+      </s-banner>
+      {acknowledged ? (
+        <s-button disabled>✓ Customer reminded to reply YES</s-button>
+      ) : (
+        <s-button variant="primary" tone="critical" onClick={onAcknowledge}>
+          I reminded the customer to reply YES
+        </s-button>
+      )}
+    </s-stack>
+  );
+}
+
 function stockLabel(row) {
   if (!row.tracked || row.available === null) return 'Stock: not tracked here';
   return `In stock here: ${row.available}`;
@@ -169,6 +190,9 @@ function Extension() {
   const [selected, setSelected] = useState([]);
   const searchSeq = useRef(0);
   const searchTimer = useRef(null);
+  // After Add, the search field must lose focus so the iPad keyboard closes.
+  const searchFieldRef = useRef(null);
+  const [searchFieldKey, setSearchFieldKey] = useState(0);
   const selectedRef = useRef([]);
   const stepRef = useRef('products');
 
@@ -185,6 +209,10 @@ function Extension() {
   const [doneInfo, setDoneInfo] = useState(null);
   // SMS chosen but the customer is not subscribed to SMS: ask the cashier before saving
   const [smsPrompt, setSmsPrompt] = useState(false);
+  // SMS subscribed from this screen just now: the customer still has to reply YES to Klaviyo's text
+  const [smsJustSubscribed, setSmsJustSubscribed] = useState(false);
+  // The cashier tapped "I reminded the customer to reply YES"
+  const [yesAck, setYesAck] = useState(false);
 
   selectedRef.current = selected;
   stepRef.current = step;
@@ -263,6 +291,15 @@ function Extension() {
     selectedRef.current = next;
     setSelected(next);
     shopify.toast.show(`Added ${row.sku || row.productTitle}`);
+    dismissKeyboard();
+  };
+
+  // Take the focus away from the search field (closes the on-screen keyboard).
+  // blur() is the normal way; re-creating the field (new key) guarantees it on devices
+  // where blur() is not passed on to the native field. The typed text and results stay.
+  const dismissKeyboard = () => {
+    try { searchFieldRef.current?.blur?.(); } catch { /* not supported */ }
+    setSearchFieldKey((k) => k + 1);
   };
 
   const removeItem = (variantId) => {
@@ -306,6 +343,8 @@ function Extension() {
 
   useEffect(() => {
     // Customer changed while on the customer page: reload
+    setSmsJustSubscribed(false);
+    setYesAck(false);
     if (step === 'customer') {
       setCustomer(null);
       setChannel(null);
@@ -340,6 +379,7 @@ function Extension() {
       const data = await api('subscribe', { customerId, channel: kind, locationId: String(locationId) });
       applyCustomer(data);
       shopify.toast.show(kind === 'email' ? 'Subscribed to email' : 'Subscribed to SMS');
+      if (kind === 'sms' && data.smsSubscribed) setSmsJustSubscribed(true);
       return kind === 'email' ? data.emailSubscribed : data.smsSubscribed;
     } catch (err) {
       setConfirmError(err.message);
@@ -370,8 +410,12 @@ function Extension() {
     }
   };
 
+  // Red "reply YES" reminder: SMS chosen and the customer is not subscribed yet, or was just subscribed here
+  const needYesAck = channel === 'sms' && Boolean(customer) && (!customer.smsSubscribed || smsJustSubscribed);
+
   const confirm = async () => {
     if (!channel || !selected.length || busy) return;
+    if (needYesAck && !yesAck) return;
     // Klaviyo only sends text messages to customers subscribed to SMS
     if (channel === 'sms' && !customer?.smsSubscribed) {
       setSmsPrompt(true);
@@ -382,7 +426,7 @@ function Extension() {
 
   // From the SMS prompt: the customer agrees to SMS
   const subscribeSmsAndConfirm = async () => {
-    if (busy) return;
+    if (busy || !yesAck) return;
     const ok = await subscribe('sms');
     if (ok) await submit('sms');
   };
@@ -392,6 +436,15 @@ function Extension() {
     if (busy || !customer?.email) return;
     setChannel('email');
     await submit('email');
+  };
+
+  // "OK" on the done screen closes the modal (back to the POS home screen)
+  const closeModal = () => {
+    try {
+      window.close();
+    } catch {
+      startOver();
+    }
   };
 
   const startOver = () => {
@@ -405,6 +458,8 @@ function Extension() {
     setDoneInfo(null);
     setConfirmError('');
     setSmsPrompt(false);
+    setSmsJustSubscribed(false);
+    setYesAck(false);
     setStep('products');
   };
 
@@ -421,11 +476,13 @@ function Extension() {
                 </s-banner>
               )}
               <s-text color="subdued">
-                Search by name, SKU or barcode, or scan the product. Tap Add for each product the customer wants.
+                Search by name, SKU or scan the product. Tap Add for each product the customer wants.
               </s-text>
 
               <s-search-field
-                placeholder="Search name, SKU or barcode"
+                key={searchFieldKey}
+                ref={searchFieldRef}
+                placeholder="Search name, SKU, or scan directly."
                 value={query}
                 onInput={(e) => onQueryInput(e.currentTarget.value)}
                 onChange={(e) => {
@@ -506,7 +563,7 @@ function Extension() {
                   {doneInfo.updated} of them {doneInfo.updated === 1 ? 'was' : 'were'} already on the list: only the notification method was updated.
                 </s-text>
               )}
-              <s-button variant="primary" onClick={startOver}>New request</s-button>
+              <s-button variant="primary" onClick={closeModal}>OK</s-button>
             </s-stack>
           </s-box>
         </s-scroll-box>
@@ -517,7 +574,7 @@ function Extension() {
   // ─── Page 2: customer ──────────────────────────────────────────────────────
   const c = customer;
   const waitingHere = c?.waiting?.length || 0;
-  const canConfirm = Boolean(c && channel && selected.length && !busy);
+  const canConfirm = Boolean(c && channel && selected.length && !busy && (!needYesAck || yesAck));
 
   return (
     <s-page heading="Restock Notify" subheading="2 of 2 · Customer">
@@ -618,14 +675,14 @@ function Extension() {
                       <s-button
                         variant={channel === 'email' ? 'primary' : 'secondary'}
                         disabled={!c.email || Boolean(busy)}
-                        onClick={() => { setChannel('email'); setSmsPrompt(false); }}
+                        onClick={() => { setChannel('email'); setSmsPrompt(false); setYesAck(false); }}
                       >
                         {channel === 'email' ? '✓ Email' : 'Email'}
                       </s-button>
                       <s-button
                         variant={channel === 'sms' ? 'primary' : 'secondary'}
                         disabled={!c.phone || Boolean(busy)}
-                        onClick={() => { setChannel('sms'); setSmsPrompt(false); }}
+                        onClick={() => { setChannel('sms'); setSmsPrompt(false); setYesAck(false); }}
                       >
                         {channel === 'sms' ? '✓ SMS' : 'SMS'}
                       </s-button>
@@ -638,6 +695,8 @@ function Extension() {
                     )}
                   </s-stack>
                 </s-section>
+
+                {needYesAck && <ReplyYesWarning acknowledged={yesAck} onAcknowledge={() => setYesAck(true)} />}
 
                 {waitingHere > 0 && (
                   <s-text type="small" color="subdued">
@@ -652,7 +711,10 @@ function Extension() {
                     <s-banner tone="warning" heading="Not subscribed to SMS">
                       Text messages can only be sent to customers subscribed to SMS. Tell the customer: to be notified by text, they need to subscribe to SMS. Otherwise they will be notified by email.
                     </s-banner>
-                    <s-button variant="primary" disabled={Boolean(busy)} onClick={subscribeSmsAndConfirm}>
+                    {!yesAck && (
+                      <s-text color="subdued">Tap "I reminded the customer to reply YES" above before subscribing.</s-text>
+                    )}
+                    <s-button variant="primary" disabled={Boolean(busy) || !yesAck} onClick={subscribeSmsAndConfirm}>
                       {busy === 'sub-sms' || busy === 'confirm' ? 'Saving...' : 'Customer agrees: subscribe to SMS and confirm'}
                     </s-button>
                     {c.email ? (
@@ -667,9 +729,14 @@ function Extension() {
                     <s-button disabled={Boolean(busy)} onClick={() => setSmsPrompt(false)}>Back</s-button>
                   </s-stack>
                 ) : (
-                  <s-button variant="primary" disabled={!canConfirm} onClick={confirm}>
-                    {busy === 'confirm' ? 'Saving...' : `Confirm (${selected.length} product${selected.length === 1 ? '' : 's'})`}
-                  </s-button>
+                  <s-stack direction="block" gap="small">
+                    {needYesAck && !yesAck && (
+                      <s-text color="subdued">Tap "I reminded the customer to reply YES" above to continue.</s-text>
+                    )}
+                    <s-button variant="primary" disabled={!canConfirm} onClick={confirm}>
+                      {busy === 'confirm' ? 'Saving...' : `Confirm (${selected.length} product${selected.length === 1 ? '' : 's'})`}
+                    </s-button>
+                  </s-stack>
                 )}
               </>
             )}

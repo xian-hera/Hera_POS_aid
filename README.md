@@ -132,7 +132,7 @@ subscribed to SMS is sent by email when the customer has an email (otherwise it 
 
 Klaviyo event properties: `channel` (the channel actually used), `requested_channel` (the one chosen at POS), `store_code`, `store_name`, `store_address`, `store_phone` (e.g. "(450) 670-9777"), `store_phone_e164`, `store_address1`,
 `store_city`, `store_province`, `store_zip`, `item_count`, `first_product_title`, `first_variant_title`,
-`first_image_url`, `items[]` (`sku`, `product_title`, `variant_title`, `vendor`, `price`, `image_url`,
+`first_image_url`, `items_text` (all items joined with commas), `items_short` (at most 2 items, then "and N more", for SMS), `items[]` (`sku`, `product_title`, `variant_title`, `vendor`, `price`, `image_url`,
 `url`, `available`, `variant_id`), `shopify_customer_id`. The profile is identified by email
 (channel `email`) or phone number (channel `sms`).
 
