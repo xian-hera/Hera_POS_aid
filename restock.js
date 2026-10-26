@@ -67,6 +67,27 @@ export function parseTypeThresholds(raw) {
   return map;
 }
 
+// Location metafield custom.display_name: single line text. Also accepts a list (uses the first value).
+export function displayNameOf(value) {
+  const v = String(value ?? "").trim();
+  if (v.startsWith("[")) {
+    try {
+      const arr = JSON.parse(v);
+      return Array.isArray(arr) ? String(arr.find((x) => String(x).trim()) ?? "").trim() : "";
+    } catch {
+      return v;
+    }
+  }
+  return v;
+}
+
+// "+14506709777" → "(450) 670-9777"; other formats are returned as they are.
+export function formatPhone(raw) {
+  const s = String(raw ?? "").trim();
+  const m = /^\+?1?(\d{3})(\d{3})(\d{4})$/.exec(s.replace(/[\s().-]/g, ""));
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : s;
+}
+
 export function normalizeEmail(raw) {
   const s = String(raw ?? "").trim().toLowerCase();
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s) && s.length <= 254 ? s : null;
@@ -112,7 +133,7 @@ const LOCATION_QUERY = `
       id
       name
       displayName: metafield(namespace: "custom", key: "display_name") { value }
-      address { address1 address2 city provinceCode zip countryCode }
+      address { address1 address2 city provinceCode zip countryCode phone }
     }
   }
 `;
@@ -388,12 +409,14 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
     const value = l ? {
       id: locationId,
       code: l.name,
-      name: l.displayName?.value?.trim() || l.name,
+      name: displayNameOf(l.displayName?.value) || l.name,
       address1: l.address?.address1 || "",
       address2: l.address?.address2 || "",
       city: l.address?.city || "",
       province: l.address?.provinceCode || "",
       zip: l.address?.zip || "",
+      phone: l.address?.phone || "",
+      phoneDisplay: formatPhone(l.address?.phone),
       country: l.address?.countryCode || "",
     } : null;
     if (value) {
@@ -672,6 +695,8 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
             store_city: location.city,
             store_province: location.province,
             store_zip: location.zip,
+            store_phone: location.phoneDisplay,
+            store_phone_e164: location.phone,
             item_count: items.length,
             first_product_title: items[0]?.product_title || "",
             first_variant_title: items[0]?.variant_title || "",

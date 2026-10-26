@@ -80,7 +80,7 @@
 **C. 门店 metafield `custom.display_name`（门店名称）**
 
 - 例如 MTL10 → "Chambly Longueuil"，这个名称会写进发给 Klaviyo 的内容里。
-- 地址直接取 Shopify 门店自己的地址。
+- **地址和电话**直接取 Shopify 门店自己的资料（Settings → Locations → 门店 → Address，其中包含 Phone），不需要另外填。要改地址或电话，就在那里改。
 - 没填名称时，就用门店代码（MTL10）代替。
 
 **去重规则：** 同一位顾客、同一个 variant、同一家门店，在"等待中"状态下只会有一条记录。重复登记时不会新增，只会更新通知方式（channel）。通知完成后，同一组合可以再次登记。
@@ -114,6 +114,8 @@
 | `store_name` | `Chambly Longueuil` |
 | `store_address` | `2877 Ch. de Chambly 22, Longueuil, QC J4L 1M8` |
 | `store_address1`、`store_city`、`store_province`、`store_zip` | 地址的各个部分 |
+| `store_phone` | `(450) 670-9777`（门店电话，取自 Shopify 门店地址里的 Phone） |
+| `store_phone_e164` | `+14506709777`（同一个电话的国际格式，可用于 `tel:` 链接） |
 | `item_count` | 本次到货的商品数 |
 | `first_product_title`、`first_variant_title`、`first_image_url` | 第一件商品（给短信用，因为短信不能循环列表） |
 | `items` | 列表，每项包含 `sku`、`product_title`、`variant_title`、`vendor`、`price`、`image_url`、`url`、`available`、`variant_id` |
@@ -226,8 +228,9 @@ Render 会自动部署。
 1. Shopify 后台 → **Settings** → **Metafields and metaobjects** → **Locations** → **Add definition**：
    - Name：`Display name`
    - Namespace and key：`custom.display_name`
-   - Type：**Single line text**
+   - Type：**Single line text**，并选 **One value**（单个值），**不要选 List**
 2. **Settings** → **Locations**，逐个打开门店，在 Metafields 里填写名称，例如 MTL10 → `Chambly Longueuil`。
+3. 同一页面检查门店的 **Address** 和 **Phone**。邮件里的门店地址和电话都直接取自这里。
 
 如果后台的门店页面看不到 Metafields 区块，把"门店代码 → 名称"的列表发给我，我直接写入。
 

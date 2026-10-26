@@ -130,7 +130,7 @@ SMS needs consent: if SMS is chosen for a customer not subscribed to SMS, the ti
 (subscribe to SMS, or notify by email instead). At notify time, a request for SMS whose customer is not
 subscribed to SMS is sent by email when the customer has an email (otherwise it stays pending).
 
-Klaviyo event properties: `channel` (the channel actually used), `requested_channel` (the one chosen at POS), `store_code`, `store_name`, `store_address`, `store_address1`,
+Klaviyo event properties: `channel` (the channel actually used), `requested_channel` (the one chosen at POS), `store_code`, `store_name`, `store_address`, `store_phone` (e.g. "(450) 670-9777"), `store_phone_e164`, `store_address1`,
 `store_city`, `store_province`, `store_zip`, `item_count`, `first_product_title`, `first_variant_title`,
 `first_image_url`, `items[]` (`sku`, `product_title`, `variant_title`, `vendor`, `price`, `image_url`,
 `url`, `available`, `variant_id`), `shopify_customer_id`. The profile is identified by email
