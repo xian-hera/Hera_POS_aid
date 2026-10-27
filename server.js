@@ -6,6 +6,7 @@
 // - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
 // - Gift card balance: storefront page /apps/hera/giftcard-balance and POS /api/giftcard/balance
 // - Restock Notify: POS tile + daily stock check called by Shopify Flow (see restock.js)
+// - Restock report for head office: /report, password-protected (see report.js)
 
 import express from "express";
 import crypto from "crypto";
@@ -17,6 +18,7 @@ import http2 from "http2";
 import { readFileSync } from "fs";
 import { createGiftCardService, lookupBalance } from "./giftcard.js";
 import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
+import { registerReport } from "./report.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -651,11 +653,19 @@ app.post(
 // ─── POS: Restock Notify (restock.js) ─────────────────────────────────────────
 // POS routes always require a valid POS session token (they return customer contact details).
 
-registerRestock(app, {
+const restockHelpers = registerRestock(app, {
   graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 20000, attempts: 2 }),
   requirePosAuth: requirePosAuthStrict,
   rateLimit,
   safeEqual,
+});
+
+// Head-office report of restock requests: /report (password: REPORT_PASSWORD). See report.js.
+registerReport(app, {
+  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 30000, attempts: 2 }),
+  rateLimit,
+  safeEqual,
+  restock: restockHelpers,
 });
 
 // ─── Storefront: App Proxy page  (herabeauty storefront /apps/hera/wallet) ───

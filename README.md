@@ -60,6 +60,7 @@ once and then migrated automatically.
 | `KLAVIYO_EMAIL_LIST_ID` | Optional. When set, email subscriptions made at POS are also sent to Klaviyo and added to this list. Off by default (the Shopify email sync is used). |
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
 | `POS_AUTH_MODE` | Customer Login only: `log` (default) or `enforce`. Switch to `enforce` once every iPad is paired and the logs show `[pos-auth] ok` for real scans. |
+| `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
 | `DEVICE_PAIRING_CODE` | iPad pairing code (6+ digits), given to store managers. Changing it does not un-pair iPads. |
 | `DEVICE_KEY_SECRET` | 32+ random characters, never shared. Signs device keys; changing it un-pairs every iPad. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
@@ -165,6 +166,28 @@ query {
   }
 }
 ```
+
+### Restock Notify POS endpoints added for the customer's list and Check Item (this store only)
+
+| Route | Purpose |
+|---|---|
+| `POST /api/restock/waiting` | `{customerId, locationId}` → what the customer waits for at this store |
+| `POST /api/restock/remove` | `{customerId, locationId, variantId}` → cancels that request (status `cancelled`), returns the new list |
+| `POST /api/restock/item` | `{locationId, variantId}` → customers waiting for this product at this store (name, email, phone), stock and threshold |
+
+## Restock report (head office)
+
+`https://search-0wf4.onrender.com/report`, password `REPORT_PASSWORD` (12-hour session cookie). Code: `report.js`,
+page: `report/index.html` (all grouping and filtering happen in the browser), sign-in: `report/login.html`.
+
+- **Waiting**: stores overview → products per store (customers, longest wait, stock now / needed) → customers per store.
+  A SKU (or part of a product name) shows, per store, how many customers wait now and how many ever waited.
+- **Notified** (period filter, default 30 days): per store and per product, customers, notifications, email / SMS,
+  average wait from request to notification; customers with what they were told and when.
+- **Export CSV** exports the rows behind the current view.
+- `notified_channel` (metaobject field, added automatically at start-up) records the channel actually used, so
+  "asked SMS, sent by email" can be counted. Records notified before it existed show the requested channel.
+- Data is cached 2 minutes; **Refresh** reloads from Shopify.
 
 ## iPad pairing (POS authentication)
 
