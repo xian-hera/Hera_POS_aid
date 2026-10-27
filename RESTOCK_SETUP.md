@@ -208,6 +208,10 @@ https://search-0wf4.onrender.com/auth?shop=你的店铺.myshopify.com
 | `RESTOCK_RUN_KEY` | 新建 | 上面生成的 40 位随机字符 |
 | `RESTOCK_THRESHOLD` | 新建 | 全局阈值，例如 `3`（available ≥ 3 才通知）。不设时默认为 1 |
 | `RESTOCK_TYPE_THRESHOLDS` | 可以不建 | 不设时默认就是 `WIG=1`。要加别的类型时，写成 `WIG=1,MAKEUP=2` |
+| `KLAVIYO_SMS_LIST_ID` | 可以不建 | POS 上点 SMS 的 Subscribe 时，后端直接在 Klaviyo 订阅，并加入这个 list。不设时默认就是 `UeqRiu`。这个 list 的确认设置决定 Klaviyo 是否发 "Reply YES" 短信 |
+| `KLAVIYO_EMAIL_LIST_ID` | 可以不建 | 设了才会把 POS 上的 email 订阅也直接写进 Klaviyo。不设时用 Shopify 的 email 同步 |
+
+**Klaviyo API key 需要的权限**：Profiles、Events、Lists、Subscriptions 都设为 Full Access。Klaviyo 的私钥创建后不能再加权限，缺权限时只能新建一个 key，替换 Render 上的 `KLAVIYO_API_KEY`。
 
 把 `RESTOCK_RUN_KEY` 另外妥善保存，步骤 9、10、13 都要用到。
 
@@ -417,6 +421,8 @@ Render → Environment 修改 `RESTOCK_THRESHOLD` 或 `RESTOCK_TYPE_THRESHOLDS`�
 |---|---|
 | `[restock] run rejected: bad key` | Flow secret 和 Render 上的 key 不一致 |
 | `[restock] notify failed ... Klaviyo 4xx` | Klaviyo key 或数据有问题，记录保持 pending，下次会重试 |
+| `[restock] Klaviyo sms subscription failed ... Klaviyo 403` | Klaviyo key 缺少 Lists 或 Subscriptions 权限，需要新建 key |
+| `[restock] customer ... subscribed to sms in Klaviyo` | 已在 Klaviyo 订阅；如果 list 开着双重确认，顾客会收到 "Reply YES" 短信 |
 | `has no phone (kept pending)` | 顾客选了 SMS，但资料里没有电话 |
 | `not subscribed to SMS → notified by email instead` | 记录是 SMS，但顾客未订阅 SMS，已改用 Email 通知 |
 | `not subscribed to SMS and has no email (kept pending)` | 无法通知，等顾客订阅 SMS 或补填 email |

@@ -55,7 +55,9 @@ once and then migrated automatically.
 | `SHOP_ACCESS_TOKEN` | Admin API token |
 | `APP_URL` | `https://search-0wf4.onrender.com` |
 | `QR_SECRET` | Signs card barcodes and download links. Changing it invalidates every card. |
-| `SMILE_API_KEY`, `KLAVIYO_API_KEY` | |
+| `SMILE_API_KEY`, `KLAVIYO_API_KEY` | Klaviyo private key scopes needed: Profiles, Events, Lists, Subscriptions (Full access). |
+| `KLAVIYO_SMS_LIST_ID` | Optional. Klaviyo list that SMS subscriptions made at POS are added to (Subscribe Profiles API). Default `UeqRiu`. Its opt-in setting decides whether Klaviyo sends the "Reply YES" text. |
+| `KLAVIYO_EMAIL_LIST_ID` | Optional. When set, email subscriptions made at POS are also sent to Klaviyo and added to this list. Off by default (the Shopify email sync is used). |
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |

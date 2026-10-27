@@ -337,6 +337,9 @@ const DEFINITION_INPUT = {
 
 export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeEqual }) {
   const KLAVIYO_API_KEY = process.env.KLAVIYO_API_KEY || "";
+  // Klaviyo list that SMS subscribers made at POS are added to (default: the list the Shopify integration syncs SMS subscribers to)
+  const KLAVIYO_SMS_LIST_ID = (process.env.KLAVIYO_SMS_LIST_ID ?? "UeqRiu").trim();
+  const KLAVIYO_EMAIL_LIST_ID = (process.env.KLAVIYO_EMAIL_LIST_ID || "").trim();
   const RUN_KEY = process.env.RESTOCK_RUN_KEY || "";
   const THRESHOLD = Math.max(1, parseInt(process.env.RESTOCK_THRESHOLD || "1", 10) || 1);
   // Per product type exceptions, e.g. "WIG=1" or "WIG=1,MAKEUP=3" (type names are not case-sensitive)
@@ -591,6 +594,15 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       }
       console.log(`[restock] customer ${customerId} subscribed to ${channel} at POS (location ${locationId || "?"}, staff ${req.posUser})`);
       const c = await loadCustomer(customerId);
+
+      // Also subscribe directly in Klaviyo: Shopify -> Klaviyo consent sync does not always happen.
+      // Klaviyo then applies the list's opt-in setting (double opt-in = "Reply YES" text).
+      // Not awaited: the POS answer must not wait for Klaviyo; a failure is only logged.
+      if (c) {
+        subscribeInKlaviyo(channel, c)
+          .then((done) => done && console.log(`[restock] customer ${customerId} subscribed to ${channel} in Klaviyo`))
+          .catch((err) => console.warn(`[restock] Klaviyo ${channel} subscription failed for customer ${customerId}: ${err.message}`));
+      }
       return res.json(publicCustomer(c));
     } catch (err) {
       if (err.userErrors) return res.status(400).json({ error: err.message });
@@ -725,6 +737,50 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
   });
 
   // ── Klaviyo ───────────────────────────────────────────────────────────────
+
+  // Klaviyo "Subscribe Profiles" (bulk job). SMS goes to KLAVIYO_SMS_LIST_ID (default: the Shopify SMS list).
+  // Email is only sent to Klaviyo when KLAVIYO_EMAIL_LIST_ID is set (the Shopify email sync works today).
+  async function subscribeInKlaviyo(channel, customer) {
+    if (!KLAVIYO_API_KEY) throw new Error("KLAVIYO_API_KEY not set");
+    const listId = channel === "sms" ? KLAVIYO_SMS_LIST_ID : KLAVIYO_EMAIL_LIST_ID;
+    if (!listId) return false;
+    const contact = channel === "sms" ? customer.phone : customer.email;
+    if (!contact) throw new Error(`no ${channel === "sms" ? "phone" : "email"} on the customer`);
+
+    const attributes = channel === "sms"
+      ? {
+          phone_number: customer.phone,
+          ...(customer.email ? { email: customer.email } : {}), // keeps the phone on the customer's existing profile
+          subscriptions: { sms: { marketing: { consent: "SUBSCRIBED" } } },
+        }
+      : { email: customer.email, subscriptions: { email: { marketing: { consent: "SUBSCRIBED" } } } };
+
+    const resp = await fetch("https://a.klaviyo.com/api/profile-subscription-bulk-create-jobs", {
+      method: "POST",
+      headers: {
+        Authorization: `Klaviyo-API-Key ${KLAVIYO_API_KEY}`,
+        revision: KLAVIYO_REVISION,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.api+json",
+      },
+      body: JSON.stringify({
+        data: {
+          type: "profile-subscription-bulk-create-job",
+          attributes: {
+            custom_source: "Hera POS Restock Notify",
+            profiles: { data: [{ type: "profile", attributes }] },
+          },
+          relationships: { list: { data: { type: "list", id: listId } } },
+        },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "");
+      throw new Error(`Klaviyo ${resp.status} ${t.slice(0, 300)}`);
+    }
+    return true;
+  }
 
   async function setKlaviyoLocale(identifier, language) {
     if (!KLAVIYO_API_KEY) throw new Error("KLAVIYO_API_KEY not set");
