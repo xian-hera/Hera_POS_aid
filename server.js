@@ -40,7 +40,7 @@ const {
   KLAVIYO_API_KEY,
 } = process.env;
 
-const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-07";
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-10";
 const PUBLIC_URL = (APP_URL || "https://search-0wf4.onrender.com").replace(/\/+$/, "");
 
 // "log"     → accept POS requests without a valid Shopify session token, but log it

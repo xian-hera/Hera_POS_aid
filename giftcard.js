@@ -144,8 +144,7 @@ const FIND_QUERY = `
   }
 `;
 
-// NOTE: written against Admin API 2026-07, where the amount field is `initialValue`.
-// Newer versions may rename it (initialAmount); adjust here if SHOPIFY_API_VERSION is raised.
+// Admin API 2026-07+: the amount is `initialAmount` (amount + currency); `initialValue` is deprecated.
 const CREATE_MUTATION = `
   mutation GiftCardCreate($input: GiftCardCreateInput!) {
     giftCardCreate(input: $input) {
@@ -215,7 +214,7 @@ export function createGiftCardService({
     try {
       const input = {
         code: redeemCodeFor(secret, serial),
-        initialValue: amount.toFixed(2),
+        initialAmount: { amount: amount.toFixed(2), currencyCode: String(currency || order.currency || "CAD").toUpperCase() },
         note: `Hera POS ${serial} | order ${order.name || order.id}`,
       };
       for (let attempt = 0; ; attempt++) {
@@ -223,7 +222,7 @@ export function createGiftCardService({
           const data = await graphql(CREATE_MUTATION, { input });
           const payload = data?.giftCardCreate;
           if (payload?.giftCard) {
-            log.log(`[giftcard] activated serial …${tag} amount ${input.initialValue} order ${order.name || order.id}`);
+            log.log(`[giftcard] activated serial …${tag} amount ${input.initialAmount.amount} ${input.initialAmount.currencyCode} order ${order.name || order.id}`);
             return { serial, outcome: "created", amount };
           }
           const errors = payload?.userErrors || [];

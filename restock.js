@@ -144,8 +144,7 @@ const RESTOCK_CUSTOMER_QUERY = `
       lastName
       locale
       defaultEmailAddress { emailAddress marketingState marketingUpdatedAt }
-      defaultPhoneNumber { phoneNumber }
-      smsMarketingConsent { marketingState consentUpdatedAt }
+      defaultPhoneNumber { phoneNumber smsMarketingConsent { state updatedAt } }
       requests: metafield(namespace: "${METAFIELD_NS}", key: "${METAFIELD_KEY}") { value }
     }
   }
@@ -183,10 +182,10 @@ const LOCATION_QUERY = `
 const VARIANT_FIELDS = `
   id
   sku
-  barcode
+  barcodes(first: 1) { nodes { value } }
   title
   price
-  image { url }
+  media(first: 1) { nodes { preview { image { url } } } }
   product {
     id
     title
@@ -410,8 +409,8 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       emailState: c.defaultEmailAddress?.marketingState || null,
       emailConsentAt: c.defaultEmailAddress?.marketingUpdatedAt || null,
       phone: c.defaultPhoneNumber?.phoneNumber || null,
-      smsState: c.smsMarketingConsent?.marketingState || null,
-      smsConsentAt: c.smsMarketingConsent?.consentUpdatedAt || null,
+      smsState: c.defaultPhoneNumber?.smsMarketingConsent?.state || null,
+      smsConsentAt: c.defaultPhoneNumber?.smsMarketingConsent?.updatedAt || null,
       waiting: parseList(c.requests?.value),
     };
   }
@@ -518,15 +517,15 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       variantId: idOf(v.id),
       productId: idOf(v.product?.id),
       sku: v.sku || "",
-      barcode: v.barcode || "",
+      barcode: v.barcodes?.nodes?.[0]?.value || "",
       productTitle: v.product?.title || "",
       variantTitle: cleanVariantTitle(v.title),
       vendor: v.product?.vendor || "",
       productType: v.product?.productType || "",
       price: v.price || "",
       // First product media (the product's main picture); the variant's own picture when there is no product media
-      image: v.product?.featuredMedia?.preview?.image?.url || v.image?.url || "",
-      variantImage: v.image?.url || "",
+      image: v.product?.featuredMedia?.preview?.image?.url || v.media?.nodes?.[0]?.preview?.image?.url || "",
+      variantImage: v.media?.nodes?.[0]?.preview?.image?.url || "",
       url: productUrl(v),
       tracked: Boolean(v.inventoryItem?.tracked),
       // null when the variant is not stocked at this location at all
