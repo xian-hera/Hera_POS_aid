@@ -438,7 +438,8 @@ function Extension() {
     if (channel === 'email' && !c.email) return "Add the customer's email address above.";
     if (channel === 'email' && !c.emailSubscribed) return 'The customer must be subscribed to email: tap Subscribe above if the customer agrees, or choose SMS.';
     if (channel === 'sms' && !c.phone) return "Add the customer's mobile number above.";
-    if (channel === 'sms' && !c.smsSubscribed) return 'Text messages need an SMS subscription: tap Subscribe above if the customer agrees, or choose Email.';
+    // Just subscribed here: Klaviyo only confirms after the customer replies YES, so trust the tap (+ YES reminder)
+    if (channel === 'sms' && !c.smsSubscribed && !smsJustSubscribed) return 'Text messages need an SMS subscription: tap Subscribe above if the customer agrees, or choose Email.';
     if (channel === 'sms' && smsJustSubscribed && !yesAck) return 'Tap "I reminded the customer to reply YES" above to continue.';
     return null;
   })();
@@ -458,6 +459,8 @@ function Extension() {
         locationId: String(locationId),
         channel,
         language,
+        // Case C: SMS subscribed on this screen -> Klaviyo must wait for the customer's YES
+        smsJustSubscribed: channel === 'sms' && smsJustSubscribed,
         variantIds: selected.map((s) => s.variantId),
         staffId: staffId ? String(staffId) : undefined,
       });
@@ -609,7 +612,7 @@ function Extension() {
     if (!c || !channel) return null;
     const isEmail = channel === 'email';
     const value = isEmail ? c.email : c.phone;
-    const subscribed = isEmail ? c.emailSubscribed : c.smsSubscribed;
+    const subscribed = isEmail ? c.emailSubscribed : (c.smsSubscribed || smsJustSubscribed);
     const isEditing = editing[contactKind];
 
     if (!value || isEditing) {

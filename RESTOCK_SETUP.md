@@ -38,6 +38,12 @@
      - **未订阅**：显示 **Subscribe** 按钮。只在顾客同意时才点。
      - **已填且已订阅**：不需要再做什么，可以直接 Confirm。
    - **Email**：必须**已订阅 email** 才能 Confirm；顾客不同意订阅时，可以改选 SMS。
+   - **POS 上显示的订阅状态取自 Shopify**。点 **Confirm** 时，后端会把所选渠道的订阅状态同步写进 Klaviyo（因为 Shopify → Klaviyo 的同步不可靠）：
+     - **A. Email，已订阅**：在 Klaviyo 写为已订阅，同意时间用 Shopify 记录的时间，不发确认邮件。
+     - **B. Email，cashier 刚点了 Subscribe**：同上。
+     - **C. SMS，cashier 刚点了 Subscribe**：Confirm 时不写。点 Subscribe 时已经在 Klaviyo 发起订阅，Klaviyo 发 "Reply YES" 短信，是否订阅以顾客回复为准。
+     - **D. SMS，Shopify 显示已订阅**：在 Klaviyo 写为已订阅，同意时间用 Shopify 记录的时间，**不需要再回复 YES**。如果 Klaviyo 本来就是已订阅，就不写。
+     - 到货发送时如果 Klaviyo 仍然不能给这个号码发短信（比如情况 C 顾客一直没回复 YES），就改发 Email；没有 Email 就继续等待。
    - **SMS**：必须**已订阅 SMS** 才能 Confirm，因为 Klaviyo 只给订阅者发短信；也可以改选 Email。cashier **刚点了 SMS 的 Subscribe** 后，会出现红色提示 "IMPORTANT: Remind Customer to reply YES."，下面有一个红色按钮 **I reminded the customer to reply YES**，**必须先点它才能 Confirm**。改选 Email 再改回 SMS、换了手机号或换了顾客，都要重新确认。Klaviyo 开着 SMS 双重确认，新订阅的顾客会收到 "Please reply YES…" 短信，不回复 YES 就收不到到货短信。
    - 联系方式那一行依次是：邮箱或号码 · **Edit** · 绿色 **Subscribed**（已订阅）或 **Subscribe** 按钮（未订阅，下面一行小字 "Only tap Subscribe with customer's consent."）。
    - 还差步骤时，Confirm 显示为灰色，上方用一句话说明还差什么；cashier 点灰色的 Confirm 不会保存，只会把这句话变成红色。点 **Confirm** 后进入完成页，显示 "Saved"、通知方式和语言；点 **OK** 关闭弹窗。

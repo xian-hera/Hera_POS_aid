@@ -81,6 +81,13 @@ function productUrl(v) {
   return `${STORE_URL}/search?q=${encodeURIComponent(v.sku || v.product?.title || "")}`;
 }
 
+// A consent time for Klaviyo: the Shopify time when it is valid and in the past, otherwise one minute ago
+function pastIso(value) {
+  const t = Date.parse(value || "");
+  const latest = Date.now() - 60 * 1000;
+  return new Date(Number.isFinite(t) && t <= latest ? t : latest).toISOString();
+}
+
 // "fr" → "fr-CA", "en" → "en-CA" (BCP 47, the format Klaviyo's Locale expects)
 export function klaviyoLocale(language) {
   return language === "fr" ? "fr-CA" : "en-CA";
@@ -136,9 +143,9 @@ const RESTOCK_CUSTOMER_QUERY = `
       firstName
       lastName
       locale
-      defaultEmailAddress { emailAddress marketingState }
+      defaultEmailAddress { emailAddress marketingState marketingUpdatedAt }
       defaultPhoneNumber { phoneNumber }
-      smsMarketingConsent { marketingState }
+      smsMarketingConsent { marketingState consentUpdatedAt }
       requests: metafield(namespace: "${METAFIELD_NS}", key: "${METAFIELD_KEY}") { value }
     }
   }
@@ -401,8 +408,10 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       locale: c.locale || "",
       email: c.defaultEmailAddress?.emailAddress || null,
       emailState: c.defaultEmailAddress?.marketingState || null,
+      emailConsentAt: c.defaultEmailAddress?.marketingUpdatedAt || null,
       phone: c.defaultPhoneNumber?.phoneNumber || null,
       smsState: c.smsMarketingConsent?.marketingState || null,
+      smsConsentAt: c.smsMarketingConsent?.consentUpdatedAt || null,
       waiting: parseList(c.requests?.value),
     };
   }
@@ -421,6 +430,34 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
     locale: c.locale,
     language: languageOf(c.locale),
   });
+
+  // Klaviyo decides whether a text can be sent: a number is only reachable once Klaviyo has it as subscribed
+  // (after the customer replied YES when the list uses double opt-in). Shopify may say "subscribed" even when
+  // Klaviyo never received it. Returns true / false, or null when Klaviyo could not be asked.
+  async function smsSubscribedInKlaviyo(phone) {
+    if (!KLAVIYO_API_KEY || !phone) return null;
+    try {
+      const url = "https://a.klaviyo.com/api/profiles?" + new URLSearchParams({
+        filter: `equals(phone_number,"${phone}")`,
+        "additional-fields[profile]": "subscriptions",
+      });
+      const resp = await fetch(url, {
+        headers: { Authorization: `Klaviyo-API-Key ${KLAVIYO_API_KEY}`, revision: KLAVIYO_REVISION, Accept: "application/vnd.api+json" },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!resp.ok) {
+        console.warn(`[restock] Klaviyo SMS status lookup failed: ${resp.status}`);
+        return null;
+      }
+      const data = await resp.json();
+      const profiles = data?.data || [];
+      if (!profiles.length) return false;
+      return profiles.some((p) => p?.attributes?.subscriptions?.sms?.marketing?.can_receive_sms_marketing === true);
+    } catch (err) {
+      console.warn(`[restock] Klaviyo SMS status lookup failed: ${err.message}`);
+      return null;
+    }
+  }
 
   async function saveWaitingList(customerId, list) {
     if (list.length) {
@@ -641,6 +678,8 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
     const staffId = isNumericId(req.body?.staffId) ? String(req.body.staffId) : "";
     // Language confirmed by the cashier ("en" / "fr"); saved as the customer's Shopify locale
     const language = req.body?.language === "fr" ? "fr" : req.body?.language === "en" ? "en" : null;
+    // The cashier tapped SMS "Subscribe" during this request (Klaviyo then waits for the customer's YES)
+    const smsJustSubscribed = req.body?.smsJustSubscribed === true;
 
     if (!isNumericId(customerId)) return badRequest(res, "Invalid customer");
     if (!isNumericId(locationId)) return badRequest(res, "Invalid location");
@@ -724,6 +763,13 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
         }
 
         await saveWaitingList(customerId, waiting);
+
+        // Make Klaviyo's consent match Shopify for the chosen channel (Shopify -> Klaviyo sync is not reliable).
+        // Not awaited: the POS answer must not wait for Klaviyo; the result is only logged.
+        syncConsentToKlaviyo({ channel, customer, smsJustSubscribed })
+          .then((msg) => msg && console.log(`[restock] customer ${customerId}: ${msg}`))
+          .catch((err) => console.warn(`[restock] customer ${customerId}: Klaviyo consent update failed: ${err.message}`));
+
         return { status: 200, body: { ok: true, added, updated, store: location.name, channel, language: language || languageOf(customer.locale) } };
       });
 
@@ -738,22 +784,23 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
 
   // ── Klaviyo ───────────────────────────────────────────────────────────────
 
-  // Klaviyo "Subscribe Profiles" (bulk job). SMS goes to KLAVIYO_SMS_LIST_ID (default: the Shopify SMS list).
-  // Email is only sent to Klaviyo when KLAVIYO_EMAIL_LIST_ID is set (the Shopify email sync works today).
-  async function subscribeInKlaviyo(channel, customer) {
+  // Klaviyo "Subscribe Profiles" (bulk job).
+  //  historical = false: normal subscription; the list's opt-in setting applies (double opt-in = "Reply YES").
+  //  historical = true : the customer already agreed (recorded in Shopify at consentedAt); Klaviyo subscribes
+  //                      immediately, without a confirmation message.
+  async function klaviyoSubscribe({ channel, customer, listId, historical = false, consentedAt = null }) {
     if (!KLAVIYO_API_KEY) throw new Error("KLAVIYO_API_KEY not set");
-    const listId = channel === "sms" ? KLAVIYO_SMS_LIST_ID : KLAVIYO_EMAIL_LIST_ID;
-    if (!listId) return false;
     const contact = channel === "sms" ? customer.phone : customer.email;
     if (!contact) throw new Error(`no ${channel === "sms" ? "phone" : "email"} on the customer`);
 
+    const consent = { consent: "SUBSCRIBED", ...(historical ? { consented_at: pastIso(consentedAt) } : {}) };
     const attributes = channel === "sms"
       ? {
           phone_number: customer.phone,
           ...(customer.email ? { email: customer.email } : {}), // keeps the phone on the customer's existing profile
-          subscriptions: { sms: { marketing: { consent: "SUBSCRIBED" } } },
+          subscriptions: { sms: { marketing: consent } },
         }
-      : { email: customer.email, subscriptions: { email: { marketing: { consent: "SUBSCRIBED" } } } };
+      : { email: customer.email, subscriptions: { email: { marketing: consent } } };
 
     const resp = await fetch("https://a.klaviyo.com/api/profile-subscription-bulk-create-jobs", {
       method: "POST",
@@ -768,9 +815,10 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
           type: "profile-subscription-bulk-create-job",
           attributes: {
             custom_source: "Hera POS Restock Notify",
+            ...(historical ? { historical_import: true } : {}),
             profiles: { data: [{ type: "profile", attributes }] },
           },
-          relationships: { list: { data: { type: "list", id: listId } } },
+          ...(listId ? { relationships: { list: { data: { type: "list", id: listId } } } } : {}),
         },
       }),
       signal: AbortSignal.timeout(15000),
@@ -779,7 +827,36 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       const t = await resp.text().catch(() => "");
       throw new Error(`Klaviyo ${resp.status} ${t.slice(0, 300)}`);
     }
+  }
+
+  // POS "Subscribe" tap. SMS: normal subscription to the SMS list, Klaviyo sends "Reply YES" (case C).
+  // Email: only when KLAVIYO_EMAIL_LIST_ID is set; otherwise the email consent is written at Confirm.
+  async function subscribeInKlaviyo(channel, customer) {
+    if (channel === "sms") {
+      await klaviyoSubscribe({ channel: "sms", customer, listId: KLAVIYO_SMS_LIST_ID });
+      return true;
+    }
+    if (!KLAVIYO_EMAIL_LIST_ID) return false;
+    await klaviyoSubscribe({ channel: "email", customer, listId: KLAVIYO_EMAIL_LIST_ID });
     return true;
+  }
+
+  // At Confirm: write the customer's Shopify consent for the chosen channel to Klaviyo.
+  //  A/B Email subscribed (before, or just now)        -> written as subscribed, no confirmation email
+  //  C   SMS subscribed just now at this POS screen     -> nothing: Klaviyo waits for the customer's YES
+  //  D   SMS already subscribed in Shopify              -> written as subscribed, no YES needed
+  async function syncConsentToKlaviyo({ channel, customer, smsJustSubscribed }) {
+    if (!KLAVIYO_API_KEY) return null;
+    if (channel === "email") {
+      if (customer.emailState !== "SUBSCRIBED" || !customer.email) return null;
+      await klaviyoSubscribe({ channel: "email", customer, listId: KLAVIYO_EMAIL_LIST_ID, historical: true, consentedAt: customer.emailConsentAt });
+      return "email consent written to Klaviyo";
+    }
+    if (smsJustSubscribed) return "SMS subscribed at POS just now: Klaviyo waits for the customer's YES";
+    if (customer.smsState !== "SUBSCRIBED" || !customer.phone) return null;
+    if ((await smsSubscribedInKlaviyo(customer.phone)) === true) return "SMS already subscribed in Klaviyo";
+    await klaviyoSubscribe({ channel: "sms", customer, listId: KLAVIYO_SMS_LIST_ID, historical: true, consentedAt: customer.smsConsentAt });
+    return "SMS consent from Shopify written to Klaviyo (no YES needed)";
   }
 
   async function setKlaviyoLocale(identifier, language) {
@@ -945,12 +1022,13 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
           }
           // Klaviyo only texts customers subscribed to SMS: otherwise notify by email.
           let channel = requestedChannel;
-          if (channel === "sms" && customer.smsState !== "SUBSCRIBED") {
+          const smsReachable = customer.smsState === "SUBSCRIBED" && (await smsSubscribedInKlaviyo(customer.phone)) !== false;
+          if (channel === "sms" && !smsReachable) {
             if (customer.email) {
               channel = "email";
-              summary.skipped.push(`customer ${customerId} not subscribed to SMS → notified by email instead`);
+              summary.skipped.push(`customer ${customerId} not subscribed to SMS (or did not reply YES) → notified by email instead`);
             } else {
-              summary.skipped.push(`customer ${customerId} not subscribed to SMS and has no email (kept pending)`);
+              summary.skipped.push(`customer ${customerId} not subscribed to SMS (or did not reply YES) and has no email (kept pending)`);
               return;
             }
           }
