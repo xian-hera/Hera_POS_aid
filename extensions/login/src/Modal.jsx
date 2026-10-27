@@ -2,27 +2,15 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-// Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
-const SERVER_URL = "https://search-0wf4.onrender.com";
+import { postJson, PairingRequired, PairingScreen, needsPairing } from './deviceAuth.jsx';
 
 export default async () => {
   render(<Extension />, document.body);
 };
 
-async function authHeaders() {
-  // Shopify-signed ID token, lets the backend accept requests only from our POS.
-  // Tokens expire after ~1 minute, so fetch a fresh one for every request.
-  try {
-    const token = await shopify.session.getSessionToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  } catch {
-    return {};
-  }
-}
-
 function errorMessage(status, data) {
   if (status === 401 && data?.error === 'This POS device is not authorized') {
-    return 'This POS device is not authorized. Please make sure the staff account is logged in.';
+    return 'This POS device is not authorized. Pair this iPad again (close and reopen this tile).';
   }
   if (status === 429) return 'Too many scans, please wait a minute and try again.';
   return data?.error || `Verification failed (${status})`;
@@ -45,14 +33,7 @@ function Extension() {
     setErrorMsg(null);
 
     try {
-      const resp = await fetch(`${SERVER_URL}/api/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
-        body: JSON.stringify({ token: value }),
-      });
-
-      let data = null;
-      try { data = await resp.json(); } catch { /* non-JSON response */ }
+      const { resp, data } = await postJson('/api/verify', { token: value });
 
       if (!resp.ok) throw new Error(errorMessage(resp.status, data));
 
@@ -61,6 +42,11 @@ function Extension() {
       setCustomer(data);
       setStatus('success');
     } catch (err) {
+      if (err instanceof PairingRequired) {
+        lastScannedRef.current = null;
+        setStatus('pairing');
+        return;
+      }
       setErrorMsg(err.message || 'Network error, please try again.');
       setStatus('error');
     } finally {
@@ -68,10 +54,15 @@ function Extension() {
     }
   };
 
+  // Ask for pairing as soon as the tile opens on an iPad that cannot authenticate
+  useEffect(() => {
+    needsPairing().then((need) => { if (need) setStatus('pairing'); });
+  }, []);
+
   useEffect(() => {
     const unsubscribe = shopify.scanner.scannerData.current.subscribe((result) => {
       if (!result?.data) return;
-      if (status === 'verifying' || status === 'success') return;
+      if (status === 'verifying' || status === 'success' || status === 'pairing') return;
       verifyCustomer(result.data);
     });
     return () => unsubscribe();
@@ -83,6 +74,10 @@ function Extension() {
     setErrorMsg(null);
     lastScannedRef.current = null;
   };
+
+  if (status === 'pairing') {
+    return <PairingScreen onPaired={handleReset} />;
+  }
 
   return (
     <s-page heading="Customer Login">

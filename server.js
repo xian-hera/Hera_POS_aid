@@ -379,7 +379,7 @@ app.use((req, res, next) => {
       console.warn(`[cors] request to ${req.path} from unlisted origin ${origin}`);
     }
   }
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Hera-Device");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -407,23 +407,121 @@ function verifyShopifyIdToken(token) {
   return payload;
 }
 
-function requirePosAuth(req, res, next) {
+// ─── Device pairing ──────────────────────────────────────────────────────────
+// Shopify only issues POS session tokens to accounts that have this app in their permissions, and
+// the app cannot be selected there. So an iPad can be paired once instead: a manager types
+// DEVICE_PAIRING_CODE in the tile, and the iPad receives a device key signed with DEVICE_KEY_SECRET
+// (sent back on every request in the X-Hera-Device header). Changing DEVICE_KEY_SECRET on Render
+// revokes every paired iPad at once; changing DEVICE_PAIRING_CODE does not affect paired iPads.
+const DEVICE_PAIRING_CODE = String(process.env.DEVICE_PAIRING_CODE || "").replace(/\s+/g, "");
+const DEVICE_KEY_SECRET = process.env.DEVICE_KEY_SECRET || "";
+const PAIRING_ENABLED = DEVICE_PAIRING_CODE.length >= 6 && DEVICE_KEY_SECRET.length >= 32;
+const DEVICE_KEY_PREFIX = "hd1";
+if (!PAIRING_ENABLED) {
+  console.warn("[device] pairing disabled: set DEVICE_PAIRING_CODE (6+ characters) and DEVICE_KEY_SECRET (32+ characters)");
+}
+
+function signDevicePayload(payloadB64) {
+  return crypto.createHmac("sha256", DEVICE_KEY_SECRET).update(`${DEVICE_KEY_PREFIX}.${payloadB64}`).digest("base64url");
+}
+
+function issueDeviceKey(locationId) {
+  const payload = {
+    d: crypto.randomBytes(9).toString("base64url"), // device id (for the logs)
+    loc: /^\d{1,20}$/.test(String(locationId ?? "")) ? String(locationId) : null,
+    iat: nowSeconds(),
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return { key: `${DEVICE_KEY_PREFIX}.${payloadB64}.${signDevicePayload(payloadB64)}`, payload };
+}
+
+function verifyDeviceKey(raw) {
+  if (!PAIRING_ENABLED) throw new Error("pairing disabled");
+  const parts = String(raw || "").split(".");
+  if (parts.length !== 3 || parts[0] !== DEVICE_KEY_PREFIX) throw new Error("malformed device key");
+  if (!safeEqual(signDevicePayload(parts[1]), parts[2])) throw new Error("bad device key");
+  return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+}
+
+// Shopify session token OR paired device key. Returns { via, who } or throws.
+function authenticatePos(req) {
+  const deviceKey = String(req.headers["x-hera-device"] || "").trim();
+  if (deviceKey) {
+    const d = verifyDeviceKey(deviceKey);
+    return { via: "device", who: `device ${d.d}${d.loc ? ` loc ${d.loc}` : ""}` };
+  }
   const auth = req.headers["authorization"] || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token) throw new Error("no token");
+  const payload = verifyShopifyIdToken(token);
+  return { via: "shopify", who: `user ${payload.sub || "?"}` };
+}
+
+const NOT_AUTHORIZED = { error: "This POS device is not authorized", code: "PAIRING_REQUIRED" };
+
+// Customer Login: follows POS_AUTH_MODE ("log" lets unauthenticated requests through, "enforce" refuses them)
+function requirePosAuth(req, res, next) {
   try {
-    if (!token) throw new Error("no token");
-    const payload = verifyShopifyIdToken(token);
-    console.log(`[pos-auth] ok (user ${payload.sub || "?"})`);
+    const who = authenticatePos(req);
+    req.posUser = who.who;
+    console.log(`[pos-auth] ok (${who.who})`);
     return next();
   } catch (err) {
     if (POS_AUTH_MODE === "enforce") {
-      console.warn(`[pos-auth] rejected: ${err.message}`);
-      return res.status(401).json({ error: "This POS device is not authorized" });
+      console.warn(`[pos-auth] rejected (${req.path}): ${err.message}`);
+      return res.status(401).json(NOT_AUTHORIZED);
     }
-    console.warn(`[pos-auth] would reject (mode=log): ${err.message}`);
+    console.warn(`[pos-auth] would reject (mode=log, ${req.path}): ${err.message}`);
     return next();
   }
 }
+
+// Gift cards and Restock Notify: always enforced, whatever POS_AUTH_MODE says.
+function requirePosAuthStrict(req, res, next) {
+  try {
+    req.posUser = authenticatePos(req).who;
+    return next();
+  } catch (err) {
+    console.warn(`[pos-auth] rejected (${req.path}): ${err.message}`);
+    return res.status(401).json(NOT_AUTHORIZED);
+  }
+}
+
+// Brute-force guard for the pairing code: per IP, plus a shop-wide cap on wrong codes.
+const PAIR_FAIL_WINDOW_MS = 60 * 60 * 1000;
+const PAIR_MAX_FAILS_PER_WINDOW = 20;
+let pairFails = [];
+
+app.post(
+  "/api/device/pair",
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }), // a store pairs 3 tiles on each iPad
+  (req, res) => {
+    if (!PAIRING_ENABLED) return res.status(503).json({ error: "Pairing is not set up on the server" });
+    const now = Date.now();
+    pairFails = pairFails.filter((t) => now - t < PAIR_FAIL_WINDOW_MS);
+    if (pairFails.length >= PAIR_MAX_FAILS_PER_WINDOW) {
+      console.warn(`[device] pairing locked: ${pairFails.length} wrong codes in the last hour`);
+      return res.status(429).json({ error: "Too many wrong codes. Pairing is locked, try again in an hour." });
+    }
+    const code = String(req.body?.code ?? "").replace(/\s+/g, "");
+    if (!code || !safeEqual(code, DEVICE_PAIRING_CODE)) {
+      pairFails.push(now);
+      console.warn(`[device] wrong pairing code from ${req.ip} (${pairFails.length} in the last hour)`);
+      return res.status(401).json({ error: "Wrong pairing code" });
+    }
+    const { key, payload } = issueDeviceKey(req.body?.locationId);
+    console.log(`[device] paired device ${payload.d}${payload.loc ? ` at location ${payload.loc}` : ""} from ${req.ip}`);
+    return res.json({ deviceKey: key });
+  }
+);
+
+// Tiles call this when they open, to show the pairing screen right away when needed.
+app.post(
+  "/api/device/status",
+  rateLimit({ windowMs: 60 * 1000, max: 60 }),
+  requirePosAuthStrict,
+  (req, res) => res.json({ ok: true })
+);
 
 // ─── POS: verify loyalty card barcode ─────────────────────────────────────────
 
@@ -484,20 +582,6 @@ if (GIFT_SECRET.length >= 32) {
   console.warn("[giftcard] GIFT_SECRET is missing or shorter than 32 characters: gift card sales are disabled");
 }
 
-// Always enforced, whatever POS_AUTH_MODE says: this endpoint decides whether a card can be sold.
-function requirePosAuthStrict(req, res, next) {
-  const auth = req.headers["authorization"] || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  try {
-    if (!token) throw new Error("no token");
-    const payload = verifyShopifyIdToken(token);
-    req.posUser = payload.sub || "?";
-    return next();
-  } catch (err) {
-    console.warn(`[pos-auth] rejected (${req.path}): ${err.message}`);
-    return res.status(401).json({ error: "This POS device is not authorized" });
-  }
-}
 
 app.post(
   "/api/giftcard/status",

@@ -140,7 +140,15 @@
 
 ## 1.7 安全
 
-- POS 的所有接口都要求 Shopify 签发的 POS session token（和 Gift Card 磁贴同等级别），因为这些接口会返回顾客的联系方式。
+- POS 的所有接口都必须通过验证（和 Gift Card 磁贴同等级别），因为这些接口会返回顾客的联系方式。满足以下任一条件即可：
+  - Shopify 签发的 POS session token：只有在用户权限里有这个 App 的账号才能拿到。
+  - **iPad 配对钥匙**：没有 App 权限的店员账号走这个方式。
+- **iPad 配对（Customer Login、Gift Card、Restock 三个磁贴通用）**
+  - 磁贴打开时，如果这台 iPad 既拿不到 token，又没有配对过，会显示 "Set up this iPad"。
+  - 店长输入配对码（Render 的 `DEVICE_PAIRING_CODE`）后，后台发给这台 iPad 一把钥匙（用 `DEVICE_KEY_SECRET` 签名），存在 iPad 上，以后每次请求自动带上。
+  - 三个磁贴是三个独立的扩展，Shopify 不允许它们共用储存，所以**每台 iPad 每个磁贴要各配对一次**。
+  - 防暴力猜测：同一 IP 每 15 分钟最多 20 次；全店一小时内输错 20 次，配对锁 1 小时。
+  - 要作废所有 iPad：改 `DEVICE_KEY_SECRET`，各 iPad 重新配对。只改配对码不影响已配对的 iPad。
 - Flow 调用的检查接口需要请求头 `X-Restock-Key`，值必须和 Render 上的 `RESTOCK_RUN_KEY` 一致，否则返回 401。
 - 订阅操作会在 Shopify 里记录同意时间和门店（`sourceLocationId`），opt-in 级别为 `SINGLE_OPT_IN`。
 
@@ -433,7 +441,10 @@ Render → Environment 修改 `RESTOCK_THRESHOLD` 或 `RESTOCK_TYPE_THRESHOLDS`�
 | `not subscribed to SMS → notified by email instead` | 记录是 SMS，但顾客未订阅 SMS，已改用 Email 通知 |
 | `not subscribed to SMS and has no email (kept pending)` | 无法通知，等顾客订阅 SMS 或补填 email |
 | `variant ... no longer exists → cancelled` | 商品被删除，记录已取消 |
-| `[pos-auth] rejected (/api/restock/...)` | POS 没有登录员工账户，或者 token 过期 |
+| `[pos-auth] rejected (/api/restock/...): no token` | 这台 iPad 没配对，登录账号也没有 App 权限。在磁贴里输入配对码 |
+| `[pos-auth] rejected (...): bad device key` | `DEVICE_KEY_SECRET` 改过，旧钥匙失效。磁贴会自动回到配对页，重新输入配对码 |
+| `[device] paired device ... at location ...` | 有 iPad 配对成功 |
+| `[device] wrong pairing code from ...` / `pairing locked` | 有人输错配对码；锁定后一小时内都不能配对 |
 | `[restock] metaobject field status is not filterable` | metaobject 定义被手动改过，联系我处理 |
 
 **取消某条请求**

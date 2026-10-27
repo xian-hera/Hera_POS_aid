@@ -31,7 +31,7 @@ Hera_POS_aid/
 | `GET /proxy/wallet` | Storefront `/apps/hera/wallet` (Klaviyo button) | Logged-in customer gets an "Add to Apple Wallet" page. Identity comes from the Shopify App Proxy signature. |
 | `GET /api/pass/download/:id?exp&sig` | Button on the page above | Downloads the `.pkpass`. Signed link, valid for 10 minutes. |
 | `POST /api/verify` | POS "Customer Login" tile | Checks the card barcode and returns the customer. Requires a Shopify POS session token and is rate-limited (30/min per IP). |
-| `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
+| `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token or a paired-iPad device key, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
@@ -59,7 +59,9 @@ once and then migrated automatically.
 | `KLAVIYO_SMS_LIST_ID` | Optional. Klaviyo list that SMS subscriptions made at POS are added to (Subscribe Profiles API). Default `UeqRiu`. Its opt-in setting decides whether Klaviyo sends the "Reply YES" text. |
 | `KLAVIYO_EMAIL_LIST_ID` | Optional. When set, email subscriptions made at POS are also sent to Klaviyo and added to this list. Off by default (the Shopify email sync is used). |
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
-| `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
+| `POS_AUTH_MODE` | Customer Login only: `log` (default) or `enforce`. Switch to `enforce` once every iPad is paired and the logs show `[pos-auth] ok` for real scans. |
+| `DEVICE_PAIRING_CODE` | iPad pairing code (6+ digits), given to store managers. Changing it does not un-pair iPads. |
+| `DEVICE_KEY_SECRET` | 32+ random characters, never shared. Signs device keys; changing it un-pairs every iPad. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
 | `GIFT_SECRET` | 32+ random characters. Links each card's activation serial (B) to its redeem code (A). Never change it after cards are printed. Gift cards are disabled if it is missing. |
@@ -163,6 +165,20 @@ query {
   }
 }
 ```
+
+## iPad pairing (POS authentication)
+
+Shopify gives POS session tokens only to accounts that have this app in their user permissions, and a
+POS-extension app cannot be selected there. So every tile (Customer Login, Gift Card Sale, Restock Notify)
+accepts either a Shopify session token or a device key:
+
+- A tile opens and calls `POST /api/device/status`. If the iPad has neither, the tile shows "Set up this iPad".
+- A manager types `DEVICE_PAIRING_CODE`; `POST /api/device/pair` returns a key signed with `DEVICE_KEY_SECRET`,
+  kept in the extension's storage on the iPad and sent in `X-Hera-Device` on every request.
+- Shopify keeps each extension's storage separate: each tile is paired once per iPad.
+- Wrong codes: max 20 requests per IP per 15 minutes, and pairing locks for an hour after 20 wrong codes shop-wide.
+- To revoke all iPads: change `DEVICE_KEY_SECRET` on Render.
+- `extensions/*/src/deviceAuth.jsx` is the same file in the three extensions: change all three together.
 
 ## Deploy
 

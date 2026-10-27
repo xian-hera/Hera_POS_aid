@@ -2,8 +2,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-// Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
-const SERVER_URL = "https://search-0wf4.onrender.com";
+import { postJson, PairingRequired, PairingScreen, needsPairing } from './deviceAuth.jsx';
 
 const MAX_ITEMS = 30;          // same limit as the server
 const MAX_ROWS = 60;           // search results shown at once
@@ -15,26 +14,20 @@ export default async () => {
 
 // ─── Backend calls ───────────────────────────────────────────────────────────
 
-async function authHeaders() {
-  // Shopify-signed ID token (expires after ~1 minute, so a fresh one for every request).
-  try {
-    const token = await shopify.session.getSessionToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  } catch {
-    return {};
-  }
-}
+// The Extension registers this so any request can switch the modal to the pairing screen.
+let onPairingRequired = () => {};
 
 async function api(path, body) {
-  const resp = await fetch(`${SERVER_URL}/api/restock/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
-    body: JSON.stringify(body),
-  });
-  let data = null;
-  try { data = await resp.json(); } catch { /* non-JSON response */ }
+  let result;
+  try {
+    result = await postJson(`/api/restock/${path}`, body);
+  } catch (err) {
+    if (err instanceof PairingRequired) onPairingRequired();
+    throw err;
+  }
+  const { resp, data } = result;
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error('This POS device is not authorized. Please make sure the staff account is logged in.');
+    if (resp.status === 401) throw new Error('This POS device is not authorized. Pair this iPad again (close and reopen this tile).');
     if (resp.status === 429) throw new Error('Too many requests, please wait a minute and try again.');
     throw new Error(data?.error || `Request failed (${resp.status})`);
   }
@@ -225,6 +218,13 @@ function Extension() {
   const [smsJustSubscribed, setSmsJustSubscribed] = useState(false);
   // The cashier tapped "I reminded the customer to reply YES"
   const [yesAck, setYesAck] = useState(false);
+
+  // This iPad cannot authenticate yet: show the pairing screen
+  const [pairing, setPairing] = useState(false);
+  onPairingRequired = () => setPairing(true);
+  useEffect(() => {
+    needsPairing().then((need) => { if (need) setPairing(true); });
+  }, []);
 
   selectedRef.current = selected;
   stepRef.current = step;
@@ -495,6 +495,17 @@ function Extension() {
   };
 
   // ─── Page 1: products ──────────────────────────────────────────────────────
+  if (pairing) {
+    return (
+      <PairingScreen
+        onPaired={() => {
+          setPairing(false);
+          if (step === 'customer' && customerId) loadCustomer();
+        }}
+      />
+    );
+  }
+
   if (step === 'products') {
     return (
       <s-page heading="Restock Notify" subheading="1 of 2 · Products">
