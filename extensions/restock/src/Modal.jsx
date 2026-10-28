@@ -5,6 +5,10 @@ import { useState, useEffect, useRef, useErrorBoundary } from 'preact/hooks';
 // Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
 const SERVER_URL = "https://search-0wf4.onrender.com";
 
+// TEMPORARY test switch (debug 2): false = do not show the customer's list when the tile opens
+// (start on the products page, as in the version that worked). Everything else is unchanged.
+const LIST_ON_OPEN = false;
+
 const MAX_ITEMS = 30;          // same limit as the server
 const MAX_ROWS = 60;           // search results shown at once
 const SEARCH_DELAY_MS = 350;   // wait for the cashier to stop typing
@@ -387,7 +391,7 @@ function Extension() {
 
   const [tab, setTab] = useState('add'); // add | check
   // Add Notify steps: list (what the customer already waits for here) | products | customer | done
-  const [step, setStep] = useState(customerId ? 'list' : 'products');
+  const [step, setStep] = useState(customerId && LIST_ON_OPEN ? 'list' : 'products');
 
   // customer's list (this store)
   const [listItems, setListItems] = useState([]);
@@ -622,7 +626,7 @@ function Extension() {
     if (step === 'customer') {
       setCustomer(null);
       if (customerId) loadCustomer(); else setCustomerState('idle');
-    } else if (step === 'list' || step === 'products') {
+    } else if (LIST_ON_OPEN && (step === 'list' || step === 'products')) {
       if (customerId) {
         setStep('list');
         loadList({ skipWhenEmpty: true });
@@ -755,8 +759,8 @@ function Extension() {
     setCustomer(null);
     setDoneInfo(null);
     resetCustomerChoices();
-    setStep(customerId ? 'list' : 'products');
-    if (customerId) loadList();
+    setStep(customerId && LIST_ON_OPEN ? 'list' : 'products');
+    if (customerId && LIST_ON_OPEN) loadList();
   };
 
   const switchTab = (next) => {
