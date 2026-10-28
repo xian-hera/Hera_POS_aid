@@ -568,6 +568,16 @@ async function authenticatePos(req) {
     const d = verifyDeviceKey(deviceKey);
     // keys issued for a registered iPad stop working when that iPad is removed from the list
     if (d.dev && (await registeredOrUnknown(d.dev)) === false) throw new Error("device removed from the paired list");
+    // A key from the first pairing version (no device id inside) proves this iPad was paired:
+    // register its device id now, so every account on it works without pairing again.
+    if (!d.dev && deviceId && !unknown) {
+      try {
+        await registerDevice({ deviceId, deviceName: `iPad (paired before ${new Date().toISOString().slice(0, 10)})`, locationId: d.loc, userId: "migrated" });
+        console.log(`[device] registered device ${deviceId} from an earlier pairing (key ${d.d})`);
+      } catch (err) {
+        console.warn(`[device] could not register device ${deviceId} from key ${d.d}: ${err.message}`);
+      }
+    }
     return { via: "device", who: `device key ${d.d}${d.loc ? ` loc ${d.loc}` : ""}` };
   }
   const auth = req.headers["authorization"] || "";
@@ -577,6 +587,13 @@ async function authenticatePos(req) {
     throw new Error(deviceId ? `device ${deviceId} not paired, no token` : "no token");
   }
   const payload = verifyShopifyIdToken(token);
+  // An account with the app permission (manager, owner) opened a tile on an iPad that is not on the
+  // paired list yet: pair that iPad now, so every other account on it works too.
+  if (deviceId && !unknown && PAIRING_ENABLED) {
+    registerDevice({ deviceId, deviceName: "iPad (paired by a manager account)", locationId: req.body?.locationId, userId: payload.sub || "shopify" })
+      .then(() => console.log(`[device] registered device ${deviceId} (opened by ${payload.sub || "?"})`))
+      .catch((err) => console.warn(`[device] could not register device ${deviceId}: ${err.message}`));
+  }
   return { via: "shopify", who: `user ${payload.sub || "?"}` };
 }
 

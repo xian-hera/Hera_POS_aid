@@ -80,17 +80,27 @@ function who() {
 }
 
 async function send(path, body, auth) {
+  // Hard 20-second limit: if POS holds the request (it can, for accounts without the app permission),
+  // the tile shows an error instead of loading for ever. Does not rely on AbortController alone.
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = setTimeout(() => controller?.abort(), 20000);
-  try {
-    return await fetch(`${SERVER_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...auth },
-      body: JSON.stringify(body ?? {}),
-      ...(controller ? { signal: controller.signal } : {}),
-    });
-  } catch (err) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try { controller?.abort(); } catch { /* ignore */ }
+      reject(new Error('The server did not answer, please try again.'));
+    }, 20000);
+  });
+  const request = fetch(`${SERVER_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify(body ?? {}),
+    ...(controller ? { signal: controller.signal } : {}),
+  }).catch((err) => {
     throw new Error(err?.name === 'AbortError' ? 'The server did not answer, please try again.' : 'Network error, please try again.');
+  });
+  request.catch(() => {}); // a late failure after the time limit is not reported twice
+  try {
+    return await Promise.race([request, timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -102,24 +112,40 @@ async function send(path, body, auth) {
  */
 export async function postJson(path, body) {
   const [key, id] = await Promise.all([storedKey(), deviceId()]);
-  const device = {
-    ...(id ? { 'X-Hera-Device-Id': id } : {}),
-    ...(key ? { 'X-Hera-Device': key } : {}),
-  };
-  // First try as a paired iPad only, so POS does not show "does not have access" messages.
-  let resp = await send(path, body, device);
-  if (resp.status === 401) {
-    // Not paired (or un-paired): forget an old key, try the Shopify session token once.
-    if (key) await forgetKey();
-    const token = await tokenHeader();
-    if (token.Authorization) resp = await send(path, body, { ...(id ? { 'X-Hera-Device-Id': id } : {}), ...token });
-  } else if (key && resp.ok) {
-    refreshKey(key);
+  const idHeader = id ? { 'X-Hera-Device-Id': id } : {};
+  let resp;
+  if (deviceOnlyRefused) {
+    // Already known while this tile is open: the iPad alone is not enough, send the token right away.
+    resp = await send(path, body, { ...idHeader, ...(await tokenHeader()) });
+  } else {
+    // First try as a paired iPad only, so POS does not show "does not have access" messages.
+    resp = await send(path, body, { ...idHeader, ...(key ? { 'X-Hera-Device': key } : {}) });
+    if (resp.status === 401) {
+      deviceOnlyRefused = true;
+      // Not paired (or un-paired): forget an old key, try the Shopify session token once.
+      if (key) await forgetKey();
+      const token = await tokenHeader();
+      if (token.Authorization) {
+        await discard(resp); // read the refused answer to the end before the next request
+        resp = await send(path, body, { ...idHeader, ...token });
+      }
+    } else if (key && resp.ok) {
+      refreshKey(key);
+    }
   }
   let data = null;
-  try { data = await resp.json(); } catch { /* non-JSON response */ }
+  try { data = await withTimeout(() => resp.json(), 20000, null); } catch { /* non-JSON response */ }
   if (resp.status === 401 && data?.code === 'PAIRING_REQUIRED') throw new PairingRequired();
   return { resp, data };
+}
+
+// The iPad alone (device id / key) was refused once while this tile is open
+let deviceOnlyRefused = false;
+
+// Read an unused answer to the end: an unread answer can keep the connection busy, and the
+// next requests to the server would then wait for ever.
+async function discard(resp) {
+  await withTimeout(() => resp.text(), 3000, null);
 }
 
 /** Called when a tile opens: resolves true when this iPad must be paired first. Network errors → false. */
@@ -144,6 +170,7 @@ async function pairDevice(code) {
   }
   await shopify.storage.set(STORAGE_KEY, data.deviceKey);
   keyRefreshed = true;
+  deviceOnlyRefused = false;
 }
 
 /** Full-screen pairing form. onPaired() runs after the key is saved; onCancel() is optional. */
