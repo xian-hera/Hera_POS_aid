@@ -191,16 +191,22 @@ page: `report/index.html` (all grouping and filtering happen in the browser), si
 
 ## iPad pairing (POS authentication)
 
-Shopify gives POS session tokens only to accounts that have this app in their user permissions, and a
-POS-extension app cannot be selected there. So every tile (Customer Login, Gift Card Sale, Restock Notify)
-accepts either a Shopify session token or a device key:
+Shopify gives POS session tokens only to accounts that have this app in their user permissions, and
+a POS-extension app cannot be selected there. So every tile (Customer Login, Gift Card Sale, Restock Notify)
+accepts a paired iPad or a Shopify session token:
 
-- A tile opens and calls `POST /api/device/status`. If the iPad has neither, the tile shows "Set up this iPad".
-- A manager types `DEVICE_PAIRING_CODE`; `POST /api/device/pair` returns a key signed with `DEVICE_KEY_SECRET`,
-  kept in the extension's storage on the iPad and sent in `X-Hera-Device` on every request.
-- Shopify keeps each extension's storage separate: each tile is paired once per iPad.
+- A tile opens and calls `POST /api/device/status`. If the iPad is not paired (and the account has no token),
+  the tile shows "Set up this iPad".
+- A manager types `DEVICE_PAIRING_CODE`; `POST /api/device/pair` registers the iPad's POS device id
+  (`shopify.device.getDeviceId()`) as a metaobject `hera_pos_device` (admin → Content → Metaobjects → POS device)
+  and also returns a signed device key kept in the tile's storage.
+- Every request sends `X-Hera-Device-Id` (and the key in `X-Hera-Device` when stored). The device id is the same
+  for every account and every tile, so **one pairing per iPad covers all accounts and all three tiles**.
+- Un-pair one iPad: delete its entry in Metaobjects → POS device (effective within 5 minutes; its keys stop too).
+  Un-pair every iPad: change `DEVICE_KEY_SECRET`.
 - Wrong codes: max 20 requests per IP per 15 minutes, and pairing locks for an hour after 20 wrong codes shop-wide.
-- To revoke all iPads: change `DEVICE_KEY_SECRET` on Render.
+- If Shopify cannot be reached, a paired iPad keeps working from the server's 5-minute cache; an unknown one gets
+  "Could not check this iPad right now" (503), never the pairing screen.
 - `extensions/*/src/deviceAuth.jsx` is the same file in the three extensions: change all three together.
 
 ## Deploy

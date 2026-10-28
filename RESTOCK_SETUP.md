@@ -147,9 +147,9 @@
   - Shopify 签发的 POS session token：只有在用户权限里有这个 App 的账号才能拿到。
   - **iPad 配对钥匙**：没有 App 权限的店员账号走这个方式。
 - **iPad 配对（Customer Login、Gift Card、Restock 三个磁贴通用）**
-  - 磁贴打开时，如果这台 iPad 既拿不到 token，又没有配对过，会显示 "Set up this iPad"。
-  - 店长输入配对码（Render 的 `DEVICE_PAIRING_CODE`）后，后台发给这台 iPad 一把钥匙（用 `DEVICE_KEY_SECRET` 签名），存在 iPad 上，以后每次请求自动带上。
-  - 三个磁贴是三个独立的扩展，Shopify 不允许它们共用储存，所以**每台 iPad 每个磁贴要各配对一次**。
+  - 磁贴打开时，如果这台 iPad 没有配对，登录的账号也没有 App 权限，会显示 "Set up this iPad"。
+  - 店长输入配对码（Render 的 `DEVICE_PAIRING_CODE`）后，后台登记这台 iPad 的 POS 设备 ID。以后**任何账号**在这台 iPad 上打开**任何一个**磁贴都能直接用：**每台 iPad 只需配对一次**。
+  - 已配对的 iPad 列在 Shopify 后台 **Content → Metaobjects → POS device**（设备名、门店、配对时间）。删除某一条，就取消那台 iPad 的配对（5 分钟内生效）。
   - 防暴力猜测：同一 IP 每 15 分钟最多 20 次；全店一小时内输错 20 次，配对锁 1 小时。
   - 要作废所有 iPad：改 `DEVICE_KEY_SECRET`，各 iPad 重新配对。只改配对码不影响已配对的 iPad。
 - Flow 调用的检查接口需要请求头 `X-Restock-Key`，值必须和 Render 上的 `RESTOCK_RUN_KEY` 一致，否则返回 401。
