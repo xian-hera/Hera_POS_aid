@@ -54,13 +54,23 @@ function api(path, body) {
 }
 
 async function apiNow(path, body) {
+  // TEMPORARY trace (server log "[pos-ui] restock trace …"): where a request stops on the iPad
+  // Each trace line is sent (and awaited) before the next step, so the last line in the log shows
+  // the step that never finished, and there is still only one request at a time.
+  const t0 = Date.now();
+  const trace = (step) => sendLog(`trace ${path} ${step} +${Date.now() - t0}ms`);
+  await trace('start');
+  const headers = { 'Content-Type': 'application/json', ...(await authHeaders()) };
+  await trace(headers.Authorization ? 'token-ok' : 'token-none');
   const resp = await fetch(`${SERVER_URL}/api/restock/${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    headers,
     body: JSON.stringify(body),
   });
+  await trace(`answer-${resp.status}`);
   let data = null;
-  try { data = await resp.json(); } catch { /* non-JSON response */ }
+  try { data = await resp.json(); } catch (err) { await trace(`body-error ${err?.message || err}`); }
+  await trace('body-read');
   if (!resp.ok) {
     if (resp.status === 401) throw new Error('This POS account cannot use this tile: in Shopify admin → Settings → Users, the role of the account logged in on this iPad needs access to the app Hera_POS_aid.');
     if (resp.status === 429) throw new Error('Too many requests, please wait a minute and try again.');
@@ -69,16 +79,35 @@ async function apiNow(path, body) {
   return data;
 }
 
-// Diagnostics: a few short events in the server log as "[pos-ui] restock …" (no personal data)
-function report(event, detail) {
+// Send one log line now and wait for it (used inside the request queue).
+async function sendLog(line) {
   try {
-    const s = shopify.session?.currentSession || {};
-    fetch(`${SERVER_URL}/api/pos/clientlog`, {
+    const r = await fetch(`${SERVER_URL}/api/pos/clientlog`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tile: 'restock', line: `${event} ${detail ?? ''}`.slice(0, 500), userId: s.userId ?? null }),
-    }).then((r) => r.text()).catch(() => {});
+      body: JSON.stringify({ tile: 'restock', line: String(line).slice(0, 500), userId: shopify.session?.currentSession?.userId ?? null }),
+    });
+    await r.text();
   } catch { /* never break the tile for a log line */ }
+}
+
+// Diagnostics: short events in the server log as "[pos-ui] restock …" (no personal data).
+// Log lines join the same queue as the backend calls: still only one request at a time.
+function report(event, detail) {
+  let line = '';
+  let userId = null;
+  try {
+    line = `${event} ${detail ?? ''}`.slice(0, 500);
+    userId = shopify.session?.currentSession?.userId ?? null;
+  } catch { /* ignore */ }
+  apiQueue = apiQueue
+    .then(() => fetch(`${SERVER_URL}/api/pos/clientlog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tile: 'restock', line, userId }),
+    }))
+    .then((r) => r.text())
+    .catch(() => {});
 }
 
 // ─── Search (variant level) ──────────────────────────────────────────────────
@@ -406,6 +435,11 @@ function Extension() {
   stepRef.current = step;
   tabRef.current = tab;
 
+  // TEMPORARY trace: every screen change after it is shown on the iPad
+  useEffect(() => {
+    report('trace', `screen ${tab}/${step} customer=${customerState} list=${listState}`);
+  }, [tab, step, customerState, listState]);
+
   // Follow the customer attached to the cart (it can change while the modal is open)
   useEffect(() => {
     let unsubscribe = null;
@@ -550,6 +584,7 @@ function Extension() {
     setCustomerError('');
     try {
       const data = await api('customer', { customerId });
+      report('trace', `page2 got customer data (${data ? 'yes' : 'no'})`);
       applyCustomer(data);
       // Pre-select the language from the Shopify profile (empty = English); the cashier confirms it
       setLanguage(data.language === 'fr' ? 'fr' : 'en');
