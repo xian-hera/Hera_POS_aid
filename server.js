@@ -426,6 +426,14 @@ app.use(["/api/restock", "/api/giftcard", "/api/verify"], (req, res, next) => {
   next();
 });
 
+// Short diagnostic events sent by the POS tiles ("[pos-ui] restock state add/customer customer=ready …").
+// No authentication (a tile without access must still be able to report); size and rate limited.
+app.post("/api/pos/clientlog", rateLimit({ windowMs: 60 * 1000, max: 240 }), (req, res) => {
+  const clean = (v, n) => String(v ?? "").replace(/[\r\n]+/g, " ").slice(0, n);
+  console.log(`[pos-ui] ${clean(req.body?.tile, 20)} ${clean(req.body?.line, 500)} · POS user ${clean(req.body?.userId, 20)}`);
+  res.json({ ok: true });
+});
+
 // ─── POS authentication ──────────────────────────────────────────────────────
 // Every POS tile request carries a Shopify ID token (Authorization: Bearer …). Shopify only issues it
 // when the account logged in on the POS app has this app in its role (Settings → Users → role → Apps).

@@ -87,16 +87,44 @@ async function send(path, body, headers) {
   }
 }
 
+// ─── Diagnostics: short events written to the server log as "[pos-ui] …" (no personal data) ───
+let tileName = 'tile';
+export function setTileName(name) { tileName = name; }
+export function report(event, detail) {
+  try {
+    const line = `${event}${detail === undefined ? '' : ` ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`}`.slice(0, 500);
+    fetch(`${SERVER_URL}/api/pos/clientlog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tile: tileName, line, userId: currentUserId() }),
+    }).then((r) => r.text()).catch(() => {});
+  } catch { /* never break the tile for a log line */ }
+}
+
 /**
  * POST JSON to the backend with the POS account's Shopify token.
  * Returns { resp, data }. Throws NoAppAccess when the backend refuses the account.
  */
 export async function postJson(path, body) {
+  const t0 = Date.now();
   const token = await sessionToken();
+  const t1 = Date.now();
   // userId / diag only help reading the server logs; the server trusts the token, not these values
-  const resp = await send(path, { ...(body ?? {}), userId: currentUserId(), diag: diagnostics() }, token ? { Authorization: `Bearer ${token}` } : {});
+  let resp;
+  try {
+    resp = await send(path, { ...(body ?? {}), userId: currentUserId(), diag: diagnostics() }, token ? { Authorization: `Bearer ${token}` } : {});
+  } catch (err) {
+    report('request-failed', `${path} after ${Date.now() - t0} ms: ${err.message}`);
+    throw err;
+  }
+  const t2 = Date.now();
   let data = null;
-  try { data = await withTimeout(() => resp.json(), 20000, null); } catch { /* non-JSON response */ }
+  let bodyNote = 'json';
+  try {
+    data = await withTimeout(() => resp.json(), 20000, undefined);
+    if (data === undefined) { bodyNote = 'body-failed-or-timeout'; data = null; }
+  } catch (err) { bodyNote = `body-error ${err?.message || err}`; }
+  report('request', `${path} ${resp.status} token ${t1 - t0} ms · answer ${t2 - t1} ms · body ${Date.now() - t2} ms (${bodyNote})`);
   if (resp.status === 401) throw new NoAppAccess();
   return { resp, data };
 }

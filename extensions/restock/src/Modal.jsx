@@ -1,16 +1,36 @@
 import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useErrorBoundary } from 'preact/hooks';
 
-import { postJson } from './deviceAuth.jsx';
+import { postJson, report, setTileName } from './deviceAuth.jsx';
+
+setTileName('restock');
 
 const MAX_ITEMS = 30;          // same limit as the server
 const MAX_ROWS = 60;           // search results shown at once
 const SEARCH_DELAY_MS = 350;   // wait for the cashier to stop typing
 
 export default async () => {
-  render(<Extension />, document.body);
+  render(<Boundary><Extension /></Boundary>, document.body);
 };
+
+// A screen error is shown (and written to the server log) instead of leaving a frozen page.
+function Boundary({ children }) {
+  const [error, resetError] = useErrorBoundary((err) => report('render-error', String(err?.stack || err).slice(0, 400)));
+  if (error) {
+    return (
+      <s-page heading="Restock Notify">
+        <s-box padding="base">
+          <s-stack direction="block" gap="base">
+            <s-banner tone="critical" heading="Something went wrong">{String(error?.message || error)}</s-banner>
+            <s-button onClick={resetError}>Try again</s-button>
+          </s-stack>
+        </s-box>
+      </s-page>
+    );
+  }
+  return children;
+}
 
 // ─── Backend calls ───────────────────────────────────────────────────────────
 
@@ -349,6 +369,11 @@ function Extension() {
   stepRef.current = step;
   tabRef.current = tab;
 
+  // Diagnostics: every screen / loading change goes to the server log ("[pos-ui] restock state …")
+  useEffect(() => {
+    report('state', `${tab}/${step} customer=${customerState} list=${listState} selected=${selected.length}`);
+  }, [tab, step, customerState, listState]);
+
   // Follow the customer attached to the cart (it can change while the modal is open)
   useEffect(() => {
     let unsubscribe = null;
@@ -494,11 +519,13 @@ function Extension() {
     setCustomerError('');
     try {
       const data = await api('customer', { customerId });
+      report('customer-data', data ? `keys ${Object.keys(data).join(',')}` : 'empty');
       applyCustomer(data);
       // Pre-select the language from the Shopify profile (empty = English); the cashier confirms it
       setLanguage(data.language === 'fr' ? 'fr' : 'en');
       setCustomerState('ready');
     } catch (err) {
+      report('customer-error', err?.message || String(err));
       setCustomerError(err.message || 'Could not load the customer.');
       setCustomerState('error');
     }
