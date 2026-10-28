@@ -2,15 +2,27 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-import { postJson } from './deviceAuth.jsx';
+// Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
+const SERVER_URL = "https://search-0wf4.onrender.com";
 
 export default async () => {
   render(<Extension />, document.body);
 };
 
+async function authHeaders() {
+  // Shopify-signed ID token, lets the backend accept requests only from our POS.
+  // Tokens expire after ~1 minute, so fetch a fresh one for every request.
+  try {
+    const token = await shopify.session.getSessionToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 function errorMessage(status, data) {
   if (status === 401 && data?.error === 'This POS device is not authorized') {
-    return 'This POS account cannot use this tile (no access to the app).';
+    return 'This POS device is not authorized. Please make sure the staff account is logged in.';
   }
   if (status === 429) return 'Too many scans, please wait a minute and try again.';
   return data?.error || `Verification failed (${status})`;
@@ -33,7 +45,14 @@ function Extension() {
     setErrorMsg(null);
 
     try {
-      const { resp, data } = await postJson('/api/verify', { token: value });
+      const resp = await fetch(`${SERVER_URL}/api/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ token: value }),
+      });
+
+      let data = null;
+      try { data = await resp.json(); } catch { /* non-JSON response */ }
 
       if (!resp.ok) throw new Error(errorMessage(resp.status, data));
 

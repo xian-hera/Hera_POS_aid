@@ -6,7 +6,6 @@
 // - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
 // - Gift card balance: storefront page /apps/hera/giftcard-balance and POS /api/giftcard/balance
 // - Restock Notify: POS tile + daily stock check called by Shopify Flow (see restock.js)
-// - Restock report for head office: /report, password-protected (see report.js)
 
 import express from "express";
 import crypto from "crypto";
@@ -18,7 +17,6 @@ import http2 from "http2";
 import { readFileSync } from "fs";
 import { createGiftCardService, lookupBalance } from "./giftcard.js";
 import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
-import { registerReport } from "./report.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -409,70 +407,21 @@ function verifyShopifyIdToken(token) {
   return payload;
 }
 
-// ─── POS request log (diagnostics) ───────────────────────────────────────────
-// One line per POS tile request: result, time, whether a Shopify token came with it, and what the
-// tile reported (POS user, staff member, token state on the iPad). Nothing personal is logged.
-app.use(["/api/restock", "/api/giftcard", "/api/verify"], (req, res, next) => {
-  if (req.method !== "POST") return next();
-  const started = Date.now();
-  res.on("finish", () => {
-    const d = req.body?.diag || {};
-    const clip = (v) => String(v ?? "?").slice(0, 120);
-    console.log(
-      `[pos-req] ${req.originalUrl} → ${res.statusCode} in ${Date.now() - started} ms · token sent: ${req.headers.authorization ? "yes" : "no"}` +
-      ` · iPad token: ${clip(d.token)} · POS user ${clip(req.body?.userId)} · staff ${clip(d.staffMemberId)} · location ${clip(d.locationId)} · POS ${clip(d.posVersion)}`
-    );
-  });
-  next();
-});
-
-// Short diagnostic events sent by the POS tiles ("[pos-ui] restock state add/customer customer=ready …").
-// No authentication (a tile without access must still be able to report); size and rate limited.
-app.post("/api/pos/clientlog", rateLimit({ windowMs: 60 * 1000, max: 240 }), (req, res) => {
-  const clean = (v, n) => String(v ?? "").replace(/[\r\n]+/g, " ").slice(0, n);
-  console.log(`[pos-ui] ${clean(req.body?.tile, 20)} ${clean(req.body?.line, 500)} · POS user ${clean(req.body?.userId, 20)}`);
-  res.json({ ok: true });
-});
-
-// ─── POS authentication ──────────────────────────────────────────────────────
-// Every POS tile request carries a Shopify ID token (Authorization: Bearer …). Shopify only issues it
-// when the account logged in on the POS app has this app in its role (Settings → Users → role → Apps).
-
-function authenticatePos(req) {
+function requirePosAuth(req, res, next) {
   const auth = req.headers["authorization"] || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token || token === "undefined" || token === "null") throw new Error("no token (account without access to the app?)");
-  const payload = verifyShopifyIdToken(token);
-  return { who: `user ${payload.sub || "?"}` };
-}
-
-const NOT_AUTHORIZED = { error: "This POS device is not authorized", code: "NO_APP_ACCESS" };
-const posUserNote = (req) => (req.body?.userId ? ` (POS user ${String(req.body.userId).slice(0, 20)})` : "");
-
-// Customer Login: follows POS_AUTH_MODE ("log" lets unauthenticated requests through, "enforce" refuses them)
-function requirePosAuth(req, res, next) {
   try {
-    req.posUser = authenticatePos(req).who;
-    console.log(`[pos-auth] ok (${req.posUser})`);
+    if (!token) throw new Error("no token");
+    const payload = verifyShopifyIdToken(token);
+    console.log(`[pos-auth] ok (user ${payload.sub || "?"})`);
     return next();
   } catch (err) {
     if (POS_AUTH_MODE === "enforce") {
-      console.warn(`[pos-auth] rejected (${req.path}): ${err.message}${posUserNote(req)}`);
-      return res.status(401).json(NOT_AUTHORIZED);
+      console.warn(`[pos-auth] rejected: ${err.message}`);
+      return res.status(401).json({ error: "This POS device is not authorized" });
     }
-    console.warn(`[pos-auth] would reject (mode=log, ${req.path}): ${err.message}${posUserNote(req)}`);
+    console.warn(`[pos-auth] would reject (mode=log): ${err.message}`);
     return next();
-  }
-}
-
-// Gift cards and Restock Notify: always enforced, whatever POS_AUTH_MODE says.
-function requirePosAuthStrict(req, res, next) {
-  try {
-    req.posUser = authenticatePos(req).who;
-    return next();
-  } catch (err) {
-    console.warn(`[pos-auth] rejected (${req.path}): ${err.message}${posUserNote(req)}`);
-    return res.status(401).json(NOT_AUTHORIZED);
   }
 }
 
@@ -535,6 +484,20 @@ if (GIFT_SECRET.length >= 32) {
   console.warn("[giftcard] GIFT_SECRET is missing or shorter than 32 characters: gift card sales are disabled");
 }
 
+// Always enforced, whatever POS_AUTH_MODE says: this endpoint decides whether a card can be sold.
+function requirePosAuthStrict(req, res, next) {
+  const auth = req.headers["authorization"] || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  try {
+    if (!token) throw new Error("no token");
+    const payload = verifyShopifyIdToken(token);
+    req.posUser = payload.sub || "?";
+    return next();
+  } catch (err) {
+    console.warn(`[pos-auth] rejected (${req.path}): ${err.message}`);
+    return res.status(401).json({ error: "This POS device is not authorized" });
+  }
+}
 
 app.post(
   "/api/giftcard/status",
@@ -604,19 +567,11 @@ app.post(
 // ─── POS: Restock Notify (restock.js) ─────────────────────────────────────────
 // POS routes always require a valid POS session token (they return customer contact details).
 
-const restockHelpers = registerRestock(app, {
+registerRestock(app, {
   graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 20000, attempts: 2 }),
   requirePosAuth: requirePosAuthStrict,
   rateLimit,
   safeEqual,
-});
-
-// Head-office report of restock requests: /report (password: REPORT_PASSWORD). See report.js.
-registerReport(app, {
-  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 30000, attempts: 2 }),
-  rateLimit,
-  safeEqual,
-  restock: restockHelpers,
 });
 
 // ─── Storefront: App Proxy page  (herabeauty storefront /apps/hera/wallet) ───
@@ -1106,48 +1061,7 @@ app.get("/auth/callback", async (req, res) => {
   }
 });
 
-// App home inside the Shopify admin (Apps → Hera_POS_aid). A real embedded page with App Bridge, so
-// Shopify treats Hera_POS_aid as a regular admin app (listed in Settings → Apps and in staff role
-// app permissions). Outside the admin (health checks) it still answers plain "Hera_POS_aid OK".
-app.get("/", (req, res) => {
-  const shop = String(req.query.shop || "");
-  const embedded = req.query.embedded === "1" || Boolean(req.query.host);
-  if (!embedded || !/^[a-z0-9-]+\.myshopify\.com$/i.test(shop)) return res.send("Hera_POS_aid OK");
-  res.setHeader("Content-Security-Policy", `frame-ancestors https://${shop} https://admin.shopify.com;`);
-  res.type("html").send(`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="shopify-api-key" content="${escapeHtml(SHOPIFY_API_KEY)}">
-<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
-<title>Hera_POS_aid</title>
-<style>
-  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 24px; color: #303030; background: #f1f1f1; }
-  .card { background: #fff; border-radius: 12px; padding: 20px 24px; max-width: 720px; box-shadow: 0 1px 0 rgba(0,0,0,.07); }
-  h1 { font-size: 18px; margin: 0 0 8px; } h2 { font-size: 14px; margin: 18px 0 6px; }
-  ul { margin: 0; padding-left: 20px; } a { color: #005bd3; }
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>Hera_POS_aid</h1>
-  <p>Hera Beauté's own tools for Shopify POS. Everything is used from the POS app; there is nothing to set up here.</p>
-  <h2>POS tiles</h2>
-  <ul>
-    <li><b>Customer Login</b>: scan the customer's Apple Wallet loyalty card.</li>
-    <li><b>Sell Gift Card</b>: sell and activate physical gift cards, check a card's balance.</li>
-    <li><b>Restock Notify</b>: register customers waiting for out-of-stock products; check who waits for a product.</li>
-  </ul>
-  <h2>Staff access</h2>
-  <p>To use these tiles, the account logged in on the POS app needs access to this app:
-  Settings → Users → the user's role → Apps → Hera_POS_aid.</p>
-  <h2>Reports</h2>
-  <p><a href="${escapeHtml(PUBLIC_URL)}/report" target="_blank" rel="noopener">Restock report</a> (opens in a new tab, password required).</p>
-</div>
-</body>
-</html>`);
-});
+app.get("/", (req, res) => res.send("Hera_POS_aid OK"));
 
 app.listen(PORT, () => {
   console.log(`Hera_POS_aid running on port ${PORT} (POS_AUTH_MODE=${POS_AUTH_MODE}, legacy links ${LEGACY_WALLET_LINKS ? "on" : "off"})`);

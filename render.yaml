@@ -58,9 +58,6 @@ services:
         sync: false
       - key: KLAVIYO_EMAIL_LIST_ID
         sync: false
-      # Restock report page /report: password (10+ characters). Changing it signs everybody out.
-      - key: REPORT_PASSWORD
-        sync: false
       # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
       - key: POS_AUTH_MODE
         sync: false

@@ -2,7 +2,8 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-import { SERVER_URL, postJson } from './deviceAuth.jsx';
+// Shared Hera_POS_aid backend (Render).
+const SERVER_URL = "https://search-0wf4.onrender.com";
 
 // Must match giftcard.js on the server.
 const SERIAL_PROPERTY = '_hera_gc_serial';
@@ -52,9 +53,20 @@ export default async () => {
   render(<Extension />, document.body);
 };
 
+async function authHeaders() {
+  // Shopify-signed ID token: the backend only accepts gift card requests from our POS.
+  // Tokens expire after ~1 minute, so fetch a fresh one for every request.
+  try {
+    const token = await shopify.session.getSessionToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 function errorMessage(status, data) {
   if (status === 401) {
-    return 'This POS account cannot use this tile (no access to the app).';
+    return 'This POS device is not authorized. Please make sure the staff account is logged in.';
   }
   if (status === 429) return 'Too many scans, please wait a minute and try again.';
   const base = data?.error || `Could not check the card (${status})`;
@@ -89,7 +101,13 @@ function Extension() {
     setErrorMsg('');
     go('checking');
     try {
-      const { resp, data } = await postJson('/api/giftcard/status', { serial: serialValue });
+      const resp = await fetch(`${SERVER_URL}/api/giftcard/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ serial: serialValue }),
+      });
+      let data = null;
+      try { data = await resp.json(); } catch { /* non-JSON response */ }
       if (!resp.ok) throw new Error(errorMessage(resp.status, data));
 
       setSerial(serialValue);
@@ -113,7 +131,13 @@ function Extension() {
     setErrorMsg('');
     go('checking');
     try {
-      const { resp, data } = await postJson('/api/giftcard/balance', { code: qrContent });
+      const resp = await fetch(`${SERVER_URL}/api/giftcard/balance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ code: qrContent }),
+      });
+      let data = null;
+      try { data = await resp.json(); } catch { /* non-JSON response */ }
       if (!resp.ok) throw new Error(errorMessage(resp.status, data));
       setBalanceInfo(data);
       go('balance');

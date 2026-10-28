@@ -22,9 +22,6 @@
 
 1. 先让顾客登录，用 Customer Login 磁贴扫 Apple Wallet 卡，或者在购物车里选顾客。
 2. 点首页的 **Restock Notify** 磁贴。
-   - 弹窗顶部有两个按钮：**Add Notify**（登记）和 **Check Item**（查询），选中的那个是实心并带 ✓。
-   - **顾客的等待清单（本店）**：已登录顾客时，先显示这位顾客在**本店**正在等待的商品（图片、SKU、名称、登记日期、通知方式），可以上下滚动。每项都有 **Remove**：点一次变成 "Tap again to remove"，再点一次才会取消（记录改为 `cancelled`，报表里也看得到）。清单最上方是长条按钮 **Add**，点了进入下面的第 1 页。顾客在本店没有等待中的商品时，直接进入第 1 页。第 1 页搜到已在清单里的商品时，按钮显示 "Already waiting"。
-   - **Check Item**：搜索或扫码一个商品，显示**本店**正在等这个商品的顾客人数，以及每位顾客的姓名、电话、email、登记日期、通知方式。只显示本店，其他门店的顾客在 POS 上看不到。
 3. **第 1 页 · 商品**
    - 在搜索框输入商品名、SKU 或条码，也可以直接扫商品条码。
    - 结果按 **variant** 一行一行列出：图片、SKU、商品名、Variant 名、本店库存，行末有 **Add** 按钮。
@@ -143,7 +140,7 @@
 
 ## 1.7 安全
 
-- POS 的所有接口都要求 Shopify 签发的 POS session token（和 Gift Card 磁贴同等级别），因为这些接口会返回顾客的联系方式。Shopify 只在 **POS 上登录的那个账号**的角色有这个 App 的权限时才发 token（Shopify 后台 → Settings → Users → 该账号的角色 → Apps）。没有权限时，磁贴会直接显示 "This POS account cannot use this tile…"，不会一直 Loading。
+- POS 的所有接口都要求 Shopify 签发的 POS session token（和 Gift Card 磁贴同等级别），因为这些接口会返回顾客的联系方式。
 - Flow 调用的检查接口需要请求头 `X-Restock-Key`，值必须和 Render 上的 `RESTOCK_RUN_KEY` 一致，否则返回 401。
 - 订阅操作会在 Shopify 里记录同意时间和门店（`sourceLocationId`），opt-in 级别为 `SINGLE_OPT_IN`。
 
@@ -436,7 +433,7 @@ Render → Environment 修改 `RESTOCK_THRESHOLD` 或 `RESTOCK_TYPE_THRESHOLDS`�
 | `not subscribed to SMS → notified by email instead` | 记录是 SMS，但顾客未订阅 SMS，已改用 Email 通知 |
 | `not subscribed to SMS and has no email (kept pending)` | 无法通知，等顾客订阅 SMS 或补填 email |
 | `variant ... no longer exists → cancelled` | 商品被删除，记录已取消 |
-| `[pos-auth] rejected (/api/restock/...): no token ... (POS user …)` | POS 上登录的账号没有这个 App 的权限：给该账号的角色加上 Hera_POS_aid |
+| `[pos-auth] rejected (/api/restock/...)` | POS 没有登录员工账户，或者 token 过期 |
 | `[restock] metaobject field status is not filterable` | metaobject 定义被手动改过，联系我处理 |
 
 **取消某条请求**
