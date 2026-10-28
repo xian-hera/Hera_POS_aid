@@ -2,7 +2,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-import { SERVER_URL, postJson, PairingRequired, PairingScreen, needsPairing } from './deviceAuth.jsx';
+import { SERVER_URL, postJson } from './deviceAuth.jsx';
 
 // Must match giftcard.js on the server.
 const SERIAL_PROPERTY = '_hera_gc_serial';
@@ -54,7 +54,7 @@ export default async () => {
 
 function errorMessage(status, data) {
   if (status === 401) {
-    return 'This POS device is not authorized. Pair this iPad again (close and reopen this tile).';
+    return 'This POS account cannot use this tile (no access to the app).';
   }
   if (status === 429) return 'Too many scans, please wait a minute and try again.';
   const base = data?.error || `Could not check the card (${status})`;
@@ -66,7 +66,7 @@ function money(n) {
 }
 
 function Extension() {
-  // scan | checking | amount | added | active | balance | error | pairing
+  // scan | checking | amount | added | active | balance | error
   const [step, setStep] = useState('scan');
   const [balanceInfo, setBalanceInfo] = useState(null);
   const [serial, setSerial] = useState('');
@@ -100,10 +100,6 @@ function Extension() {
         go('amount');
       }
     } catch (err) {
-      if (err instanceof PairingRequired) {
-        go('pairing');
-        return;
-      }
       setErrorMsg(err.message || 'Network error, please try again.');
       go('error');
     } finally {
@@ -122,10 +118,6 @@ function Extension() {
       setBalanceInfo(data);
       go('balance');
     } catch (err) {
-      if (err instanceof PairingRequired) {
-        go('pairing');
-        return;
-      }
       setErrorMsg(err.message || 'Network error, please try again.');
       go('error');
     } finally {
@@ -136,7 +128,7 @@ function Extension() {
   const handleScan = (raw) => {
     const original = String(raw ?? '').trim();
     if (!original) return;
-    if (busyRef.current || stepRef.current === 'checking' || stepRef.current === 'pairing') return;
+    if (busyRef.current || stepRef.current === 'checking') return;
 
     // The scanner can report the same code several times: ignore repeats within 1.5 s.
     const now = Date.now();
@@ -156,11 +148,6 @@ function Extension() {
     }
     checkCard(value);
   };
-
-  // Ask for pairing as soon as the tile opens on an iPad that cannot authenticate
-  useEffect(() => {
-    needsPairing().then((need) => { if (need) go('pairing'); });
-  }, []);
 
   useEffect(() => {
     // The subscription may immediately replay the previous scan (even from another tile):
@@ -224,10 +211,6 @@ function Extension() {
   };
 
   const shortId = serial ? `…${serial.slice(-4)}` : '';
-
-  if (step === 'pairing') {
-    return <PairingScreen onPaired={handleReset} />;
-  }
 
   return (
     <s-page heading="Sell Gift Card">

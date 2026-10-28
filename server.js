@@ -381,7 +381,7 @@ app.use((req, res, next) => {
       console.warn(`[cors] request to ${req.path} from unlisted origin ${origin}`);
     }
   }
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Hera-Device, X-Hera-Device-Id");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -409,273 +409,47 @@ function verifyShopifyIdToken(token) {
   return payload;
 }
 
-// ─── Device pairing ──────────────────────────────────────────────────────────
-// Shopify only issues POS session tokens to accounts that have this app in their permissions, and
-// the app cannot be selected there. So an iPad is paired once instead: a manager types
-// DEVICE_PAIRING_CODE in a tile. The server then
-//   • registers the iPad's POS device id (shopify.device.getDeviceId()) as a metaobject
-//     `hera_pos_device` (Shopify admin → Content → Metaobjects → POS device). Every tile sends that id
-//     (X-Hera-Device-Id), whatever account is logged in on the iPad, so one pairing covers every
-//     account and every tile;
-//   • also returns a signed device key (X-Hera-Device), kept in the tile's storage as a second way in.
-// Revoking: delete the iPad's entry in Metaobjects → POS device (that iPad only), or change
-// DEVICE_KEY_SECRET on Render (every iPad). Changing DEVICE_PAIRING_CODE does not un-pair iPads.
-const DEVICE_PAIRING_CODE = String(process.env.DEVICE_PAIRING_CODE || "").replace(/\s+/g, "");
-const DEVICE_KEY_SECRET = process.env.DEVICE_KEY_SECRET || "";
-const PAIRING_ENABLED = DEVICE_PAIRING_CODE.length >= 6 && DEVICE_KEY_SECRET.length >= 32;
-const DEVICE_KEY_PREFIX = "hd1";
-const DEVICE_TYPE = "hera_pos_device";
-// Changes when DEVICE_KEY_SECRET changes: registrations made with an older secret no longer count
-const DEVICE_KEY_VERSION = crypto.createHash("sha256").update(`hera-device|${DEVICE_KEY_SECRET}`).digest("hex").slice(0, 12);
-if (!PAIRING_ENABLED) {
-  console.warn("[device] pairing disabled: set DEVICE_PAIRING_CODE (6+ characters) and DEVICE_KEY_SECRET (32+ characters)");
-}
+// ─── POS authentication ──────────────────────────────────────────────────────
+// Every POS tile request carries a Shopify ID token (Authorization: Bearer …). Shopify only issues it
+// when the account logged in on the POS app has this app in its role (Settings → Users → role → Apps).
 
-const cleanDeviceId = (v) => {
-  const s = String(v ?? "").trim();
-  return /^[A-Za-z0-9._:\-]{1,100}$/.test(s) ? s : null;
-};
-// Metaobject handle for a POS device id (hashed: handles only allow a few characters)
-const deviceHandle = (deviceId) => `dev-${crypto.createHmac("sha256", "hera-pos-device").update(deviceId).digest("hex").slice(0, 32)}`;
-
-const DEVICE_LOOKUP = `
-  query DeviceLookup($handle: MetaobjectHandleInput!) {
-    metaobjectByHandle(handle: $handle) { id fields { key value } }
-  }
-`;
-const DEVICE_UPSERT = `
-  mutation DeviceUpsert($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
-    metaobjectUpsert(handle: $handle, metaobject: $metaobject) { metaobject { id } userErrors { field message } }
-  }
-`;
-const DEVICE_DEFINITION = `
-  query DeviceDefinition { metaobjectDefinitionByType(type: "${DEVICE_TYPE}") { id } }
-`;
-const DEVICE_DEFINITION_CREATE = `
-  mutation DeviceDefinitionCreate($definition: MetaobjectDefinitionCreateInput!) {
-    metaobjectDefinitionCreate(definition: $definition) { metaobjectDefinition { id } userErrors { field message } }
-  }
-`;
-
-async function ensureDeviceDefinition() {
-  if (!PAIRING_ENABLED) return;
-  try {
-    const data = await shopifyGraphQL(DEVICE_DEFINITION, {}, { timeoutMs: 20000 });
-    if (data.metaobjectDefinitionByType) return;
-    const created = await shopifyGraphQL(DEVICE_DEFINITION_CREATE, {
-      definition: {
-        type: DEVICE_TYPE,
-        name: "POS device",
-        description: "iPads paired for the Hera POS tiles (Customer Login, Gift Card Sale, Restock Notify). Delete an entry to un-pair that iPad.",
-        displayNameKey: "device_name",
-        fieldDefinitions: [
-          { key: "device_name", name: "Device name", type: "single_line_text_field" },
-          { key: "device_id", name: "POS device ID", type: "single_line_text_field" },
-          { key: "location_id", name: "Location ID (when paired)", type: "single_line_text_field" },
-          { key: "paired_by", name: "POS user who paired", type: "single_line_text_field" },
-          { key: "paired_at", name: "Paired at", type: "date_time" },
-          { key: "key_version", name: "Key version", type: "single_line_text_field" },
-        ],
-      },
-    }, { timeoutMs: 20000 });
-    const errs = created.metaobjectDefinitionCreate?.userErrors || [];
-    if (errs.length) throw new Error(errs.map((e) => e.message).join("; "));
-    console.log(`[device] created metaobject definition ${DEVICE_TYPE}`);
-  } catch (err) {
-    console.error(`[device] setup failed: ${err.message}`);
-  }
-}
-ensureDeviceDefinition();
-
-// deviceId → { ok, at }   (known iPads are re-checked every 5 minutes, unknown ones every minute)
-const deviceCache = new Map();
-
-async function isRegisteredDevice(deviceId) {
-  if (!PAIRING_ENABLED || !deviceId) return false;
-  const hit = deviceCache.get(deviceId);
-  if (hit && Date.now() - hit.at < (hit.ok ? 5 * 60 * 1000 : 60 * 1000)) return hit.ok;
-  const data = await shopifyGraphQL(DEVICE_LOOKUP, { handle: { type: DEVICE_TYPE, handle: deviceHandle(deviceId) } }, { timeoutMs: 10000 });
-  const f = Object.fromEntries((data.metaobjectByHandle?.fields || []).map((x) => [x.key, x.value]));
-  const ok = Boolean(data.metaobjectByHandle) && f.device_id === deviceId && f.key_version === DEVICE_KEY_VERSION;
-  deviceCache.set(deviceId, { ok, at: Date.now() });
-  if (deviceCache.size > 5000) deviceCache.clear();
-  return ok;
-}
-
-async function registerDevice({ deviceId, deviceName, locationId, userId }) {
-  const data = await shopifyGraphQL(DEVICE_UPSERT, {
-    handle: { type: DEVICE_TYPE, handle: deviceHandle(deviceId) },
-    metaobject: {
-      fields: [
-        { key: "device_id", value: deviceId },
-        { key: "device_name", value: String(deviceName || "iPad").slice(0, 100) },
-        { key: "location_id", value: /^\d{1,20}$/.test(String(locationId ?? "")) ? String(locationId) : "" },
-        { key: "paired_by", value: String(userId ?? "").slice(0, 30) },
-        { key: "paired_at", value: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00") },
-        { key: "key_version", value: DEVICE_KEY_VERSION },
-      ],
-    },
-  }, { timeoutMs: 15000 });
-  const errs = data.metaobjectUpsert?.userErrors || [];
-  if (errs.length) throw new Error(errs.map((e) => e.message).join("; "));
-  deviceCache.set(deviceId, { ok: true, at: Date.now() });
-}
-
-function signDevicePayload(payloadB64) {
-  return crypto.createHmac("sha256", DEVICE_KEY_SECRET).update(`${DEVICE_KEY_PREFIX}.${payloadB64}`).digest("base64url");
-}
-
-function issueDeviceKey(locationId, deviceId) {
-  const payload = {
-    d: crypto.randomBytes(9).toString("base64url"), // key id (for the logs)
-    loc: /^\d{1,20}$/.test(String(locationId ?? "")) ? String(locationId) : null,
-    dev: deviceId || null, // POS device id: the key stops working when that iPad is removed from the list
-    iat: nowSeconds(),
-  };
-  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return { key: `${DEVICE_KEY_PREFIX}.${payloadB64}.${signDevicePayload(payloadB64)}`, payload };
-}
-
-function verifyDeviceKey(raw) {
-  if (!PAIRING_ENABLED) throw new Error("pairing disabled");
-  const parts = String(raw || "").split(".");
-  if (parts.length !== 3 || parts[0] !== DEVICE_KEY_PREFIX) throw new Error("malformed device key");
-  if (!safeEqual(signDevicePayload(parts[1]), parts[2])) throw new Error("bad device key");
-  return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-}
-
-// true / false, or null when Shopify could not be asked (outage): never un-pair an iPad because of that
-async function registeredOrUnknown(deviceId) {
-  try {
-    return await isRegisteredDevice(deviceId);
-  } catch (err) {
-    console.warn(`[device] lookup failed for ${deviceId}: ${err.message}`);
-    return null;
-  }
-}
-
-// Paired iPad (device id or device key) OR Shopify session token. Returns { via, who } or throws.
-async function authenticatePos(req) {
-  const deviceId = cleanDeviceId(req.headers["x-hera-device-id"]);
-  let unknown = false;
-  if (deviceId) {
-    const reg = await registeredOrUnknown(deviceId);
-    if (reg) return { via: "device", who: `device ${deviceId}` };
-    if (reg === null) unknown = true;
-  }
-  const deviceKey = String(req.headers["x-hera-device"] || "").trim();
-  if (deviceKey) {
-    const d = verifyDeviceKey(deviceKey);
-    // keys issued for a registered iPad stop working when that iPad is removed from the list
-    if (d.dev && (await registeredOrUnknown(d.dev)) === false) throw new Error("device removed from the paired list");
-    // A key from the first pairing version (no device id inside) proves this iPad was paired:
-    // register its device id now, so every account on it works without pairing again.
-    if (!d.dev && deviceId && !unknown) {
-      try {
-        await registerDevice({ deviceId, deviceName: `iPad (paired before ${new Date().toISOString().slice(0, 10)})`, locationId: d.loc, userId: "migrated" });
-        console.log(`[device] registered device ${deviceId} from an earlier pairing (key ${d.d})`);
-      } catch (err) {
-        console.warn(`[device] could not register device ${deviceId} from key ${d.d}: ${err.message}`);
-      }
-    }
-    return { via: "device", who: `device key ${d.d}${d.loc ? ` loc ${d.loc}` : ""}` };
-  }
+function authenticatePos(req) {
   const auth = req.headers["authorization"] || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) {
-    if (unknown) throw Object.assign(new Error("could not check the paired list"), { temporary: true });
-    throw new Error(deviceId ? `device ${deviceId} not paired, no token` : "no token");
-  }
+  if (!token || token === "undefined" || token === "null") throw new Error("no token (account without access to the app?)");
   const payload = verifyShopifyIdToken(token);
-  // An account with the app permission (manager, owner) opened a tile on an iPad that is not on the
-  // paired list yet: pair that iPad now, so every other account on it works too.
-  if (deviceId && !unknown && PAIRING_ENABLED) {
-    registerDevice({ deviceId, deviceName: "iPad (paired by a manager account)", locationId: req.body?.locationId, userId: payload.sub || "shopify" })
-      .then(() => console.log(`[device] registered device ${deviceId} (opened by ${payload.sub || "?"})`))
-      .catch((err) => console.warn(`[device] could not register device ${deviceId}: ${err.message}`));
-  }
-  return { via: "shopify", who: `user ${payload.sub || "?"}` };
+  return { who: `user ${payload.sub || "?"}` };
 }
 
-const NOT_AUTHORIZED = { error: "This POS device is not authorized", code: "PAIRING_REQUIRED" };
-const CHECK_FAILED = { error: "Could not check this iPad right now, please try again." };
+const NOT_AUTHORIZED = { error: "This POS device is not authorized", code: "NO_APP_ACCESS" };
 const posUserNote = (req) => (req.body?.userId ? ` (POS user ${String(req.body.userId).slice(0, 20)})` : "");
 
 // Customer Login: follows POS_AUTH_MODE ("log" lets unauthenticated requests through, "enforce" refuses them)
-async function requirePosAuth(req, res, next) {
+function requirePosAuth(req, res, next) {
   try {
-    const who = await authenticatePos(req);
-    req.posUser = who.who;
-    console.log(`[pos-auth] ok (${who.who})`);
+    req.posUser = authenticatePos(req).who;
+    console.log(`[pos-auth] ok (${req.posUser})`);
     return next();
   } catch (err) {
     if (POS_AUTH_MODE === "enforce") {
       console.warn(`[pos-auth] rejected (${req.path}): ${err.message}${posUserNote(req)}`);
-      if (err.temporary) return res.status(503).json(CHECK_FAILED);
       return res.status(401).json(NOT_AUTHORIZED);
     }
-    console.warn(`[pos-auth] would reject (mode=log, ${req.path}): ${err.message}`);
+    console.warn(`[pos-auth] would reject (mode=log, ${req.path}): ${err.message}${posUserNote(req)}`);
     return next();
   }
 }
 
 // Gift cards and Restock Notify: always enforced, whatever POS_AUTH_MODE says.
-async function requirePosAuthStrict(req, res, next) {
+function requirePosAuthStrict(req, res, next) {
   try {
-    req.posUser = (await authenticatePos(req)).who;
+    req.posUser = authenticatePos(req).who;
     return next();
   } catch (err) {
     console.warn(`[pos-auth] rejected (${req.path}): ${err.message}${posUserNote(req)}`);
-    if (err.temporary) return res.status(503).json(CHECK_FAILED);
     return res.status(401).json(NOT_AUTHORIZED);
   }
 }
-
-// Brute-force guard for the pairing code: per IP, plus a shop-wide cap on wrong codes.
-const PAIR_FAIL_WINDOW_MS = 60 * 60 * 1000;
-const PAIR_MAX_FAILS_PER_WINDOW = 20;
-let pairFails = [];
-
-app.post(
-  "/api/device/pair",
-  rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }),
-  async (req, res) => {
-    if (!PAIRING_ENABLED) return res.status(503).json({ error: "Pairing is not set up on the server" });
-    const now = Date.now();
-    pairFails = pairFails.filter((t) => now - t < PAIR_FAIL_WINDOW_MS);
-    if (pairFails.length >= PAIR_MAX_FAILS_PER_WINDOW) {
-      console.warn(`[device] pairing locked: ${pairFails.length} wrong codes in the last hour`);
-      return res.status(429).json({ error: "Too many wrong codes. Pairing is locked, try again in an hour." });
-    }
-    const code = String(req.body?.code ?? "").replace(/\s+/g, "");
-    if (!code || !safeEqual(code, DEVICE_PAIRING_CODE)) {
-      pairFails.push(now);
-      console.warn(`[device] wrong pairing code from ${req.ip} (${pairFails.length} in the last hour)`);
-      return res.status(401).json({ error: "Wrong pairing code" });
-    }
-    const deviceId = cleanDeviceId(req.body?.deviceId);
-    const { key, payload } = issueDeviceKey(req.body?.locationId, deviceId);
-    const u = req.body?.userId ? `, POS user ${String(req.body.userId).slice(0, 20)}` : "";
-    if (deviceId) {
-      try {
-        await registerDevice({ deviceId, deviceName: req.body?.deviceName, locationId: req.body?.locationId, userId: req.body?.userId });
-      } catch (err) {
-        console.error(`[device] could not register device ${deviceId}: ${err.message}`);
-        return res.status(502).json({ error: "Shopify did not respond, please try again" });
-      }
-    }
-    console.log(`[device] paired ${deviceId ? `device ${deviceId} (${String(req.body?.deviceName || "").slice(0, 60)})` : `key ${payload.d} (no device id)`}${payload.loc ? ` at location ${payload.loc}` : ""}${u} from ${req.ip}`);
-    return res.json({ deviceKey: key, deviceRegistered: Boolean(deviceId) });
-  }
-);
-
-// Tiles call this when they open, to show the pairing screen right away when needed.
-app.post(
-  "/api/device/status",
-  rateLimit({ windowMs: 60 * 1000, max: 60 }),
-  requirePosAuthStrict,
-  (req, res) => res.json({ ok: true })
-);
 
 // ─── POS: verify loyalty card barcode ─────────────────────────────────────────
 
@@ -1307,7 +1081,48 @@ app.get("/auth/callback", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Hera_POS_aid OK"));
+// App home inside the Shopify admin (Apps → Hera_POS_aid). A real embedded page with App Bridge, so
+// Shopify treats Hera_POS_aid as a regular admin app (listed in Settings → Apps and in staff role
+// app permissions). Outside the admin (health checks) it still answers plain "Hera_POS_aid OK".
+app.get("/", (req, res) => {
+  const shop = String(req.query.shop || "");
+  const embedded = req.query.embedded === "1" || Boolean(req.query.host);
+  if (!embedded || !/^[a-z0-9-]+\.myshopify\.com$/i.test(shop)) return res.send("Hera_POS_aid OK");
+  res.setHeader("Content-Security-Policy", `frame-ancestors https://${shop} https://admin.shopify.com;`);
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="shopify-api-key" content="${escapeHtml(SHOPIFY_API_KEY)}">
+<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+<title>Hera_POS_aid</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 24px; color: #303030; background: #f1f1f1; }
+  .card { background: #fff; border-radius: 12px; padding: 20px 24px; max-width: 720px; box-shadow: 0 1px 0 rgba(0,0,0,.07); }
+  h1 { font-size: 18px; margin: 0 0 8px; } h2 { font-size: 14px; margin: 18px 0 6px; }
+  ul { margin: 0; padding-left: 20px; } a { color: #005bd3; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Hera_POS_aid</h1>
+  <p>Hera Beauté's own tools for Shopify POS. Everything is used from the POS app; there is nothing to set up here.</p>
+  <h2>POS tiles</h2>
+  <ul>
+    <li><b>Customer Login</b>: scan the customer's Apple Wallet loyalty card.</li>
+    <li><b>Sell Gift Card</b>: sell and activate physical gift cards, check a card's balance.</li>
+    <li><b>Restock Notify</b>: register customers waiting for out-of-stock products; check who waits for a product.</li>
+  </ul>
+  <h2>Staff access</h2>
+  <p>To use these tiles, the account logged in on the POS app needs access to this app:
+  Settings → Users → the user's role → Apps → Hera_POS_aid.</p>
+  <h2>Reports</h2>
+  <p><a href="${escapeHtml(PUBLIC_URL)}/report" target="_blank" rel="noopener">Restock report</a> (opens in a new tab, password required).</p>
+</div>
+</body>
+</html>`);
+});
 
 app.listen(PORT, () => {
   console.log(`Hera_POS_aid running on port ${PORT} (POS_AUTH_MODE=${POS_AUTH_MODE}, legacy links ${LEGACY_WALLET_LINKS ? "on" : "off"})`);

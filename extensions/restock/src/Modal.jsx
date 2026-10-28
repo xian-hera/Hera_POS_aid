@@ -2,7 +2,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-import { postJson, PairingRequired, PairingScreen, needsPairing } from './deviceAuth.jsx';
+import { postJson } from './deviceAuth.jsx';
 
 const MAX_ITEMS = 30;          // same limit as the server
 const MAX_ROWS = 60;           // search results shown at once
@@ -14,20 +14,10 @@ export default async () => {
 
 // ─── Backend calls ───────────────────────────────────────────────────────────
 
-// The Extension registers this so any request can switch the modal to the pairing screen.
-let onPairingRequired = () => {};
-
 async function api(path, body) {
-  let result;
-  try {
-    result = await postJson(`/api/restock/${path}`, body);
-  } catch (err) {
-    if (err instanceof PairingRequired) onPairingRequired();
-    throw err;
-  }
-  const { resp, data } = result;
+  // Throws NoAppAccess (with an explanation) when the POS account has no access to the app
+  const { resp, data } = await postJson(`/api/restock/${path}`, body);
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error('This POS device is not authorized. Pair this iPad again (close and reopen this tile).');
     if (resp.status === 429) throw new Error('Too many requests, please wait a minute and try again.');
     throw new Error(data?.error || `Request failed (${resp.status})`);
   }
@@ -354,13 +344,6 @@ function Extension() {
   const [smsJustSubscribed, setSmsJustSubscribed] = useState(false);
   // The cashier tapped "I reminded the customer to reply YES"
   const [yesAck, setYesAck] = useState(false);
-
-  // This iPad cannot authenticate yet: show the pairing screen
-  const [pairing, setPairing] = useState(false);
-  onPairingRequired = () => setPairing(true);
-  useEffect(() => {
-    needsPairing().then((need) => { if (need) setPairing(true); });
-  }, []);
 
   selectedRef.current = selected;
   stepRef.current = step;
@@ -690,19 +673,6 @@ function Extension() {
     setTab(next);
     if (next === 'add' && step === 'list' && customerId) loadList(); // the list may have changed
   };
-
-  // ─── Pairing ───────────────────────────────────────────────────────────────
-  if (pairing) {
-    return (
-      <PairingScreen
-        onPaired={() => {
-          setPairing(false);
-          if (step === 'customer' && customerId) loadCustomer();
-          if (step === 'list' && customerId) loadList({ skipWhenEmpty: true });
-        }}
-      />
-    );
-  }
 
   // ─── Check Item: who waits for a product at this store ─────────────────────
   if (tab === 'check') {

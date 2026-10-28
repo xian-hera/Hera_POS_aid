@@ -31,7 +31,7 @@ Hera_POS_aid/
 | `GET /proxy/wallet` | Storefront `/apps/hera/wallet` (Klaviyo button) | Logged-in customer gets an "Add to Apple Wallet" page. Identity comes from the Shopify App Proxy signature. |
 | `GET /api/pass/download/:id?exp&sig` | Button on the page above | Downloads the `.pkpass`. Signed link, valid for 10 minutes. |
 | `POST /api/verify` | POS "Customer Login" tile | Checks the card barcode and returns the customer. Requires a Shopify POS session token and is rate-limited (30/min per IP). |
-| `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token or a paired-iPad device key, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
+| `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
@@ -59,10 +59,8 @@ once and then migrated automatically.
 | `KLAVIYO_SMS_LIST_ID` | Optional. Klaviyo list that SMS subscriptions made at POS are added to (Subscribe Profiles API). Default `UeqRiu`. Its opt-in setting decides whether Klaviyo sends the "Reply YES" text. |
 | `KLAVIYO_EMAIL_LIST_ID` | Optional. When set, email subscriptions made at POS are also sent to Klaviyo and added to this list. Off by default (the Shopify email sync is used). |
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
-| `POS_AUTH_MODE` | Customer Login only: `log` (default) or `enforce`. Switch to `enforce` once every iPad is paired and the logs show `[pos-auth] ok` for real scans. |
+| `POS_AUTH_MODE` | Customer Login only: `log` (default) or `enforce`. Switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
-| `DEVICE_PAIRING_CODE` | iPad pairing code (6+ digits), given to store managers. Changing it does not un-pair iPads. |
-| `DEVICE_KEY_SECRET` | 32+ random characters, never shared. Signs device keys; changing it un-pairs every iPad. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
 | `GIFT_SECRET` | 32+ random characters. Links each card's activation serial (B) to its redeem code (A). Never change it after cards are printed. Gift cards are disabled if it is missing. |
@@ -189,25 +187,16 @@ page: `report/index.html` (all grouping and filtering happen in the browser), si
   "asked SMS, sent by email" can be counted. Records notified before it existed show the requested channel.
 - Data is cached 2 minutes; **Refresh** reloads from Shopify.
 
-## iPad pairing (POS authentication)
+## POS authentication
 
-Shopify gives POS session tokens only to accounts that have this app in their user permissions, and
-a POS-extension app cannot be selected there. So every tile (Customer Login, Gift Card Sale, Restock Notify)
-accepts a paired iPad or a Shopify session token:
+Every POS tile request carries the Shopify ID token of the account logged in on the POS app
+(`shopify.session.getSessionToken()`). Shopify issues it only when that account's role gives access to this app
+(Shopify admin → Settings → Users → role → Apps). Without it the backend answers 401 (`NO_APP_ACCESS`) and the tile
+says so. Customer Login follows `POS_AUTH_MODE` (`log` lets requests without a token through); gift cards and
+Restock Notify always require the token. `extensions/*/src/deviceAuth.jsx` is the same file in the three extensions.
 
-- A tile opens and calls `POST /api/device/status`. If the iPad is not paired (and the account has no token),
-  the tile shows "Set up this iPad".
-- A manager types `DEVICE_PAIRING_CODE`; `POST /api/device/pair` registers the iPad's POS device id
-  (`shopify.device.getDeviceId()`) as a metaobject `hera_pos_device` (admin → Content → Metaobjects → POS device)
-  and also returns a signed device key kept in the tile's storage.
-- Every request sends `X-Hera-Device-Id` (and the key in `X-Hera-Device` when stored). The device id is the same
-  for every account and every tile, so **one pairing per iPad covers all accounts and all three tiles**.
-- Un-pair one iPad: delete its entry in Metaobjects → POS device (effective within 5 minutes; its keys stop too).
-  Un-pair every iPad: change `DEVICE_KEY_SECRET`.
-- Wrong codes: max 20 requests per IP per 15 minutes, and pairing locks for an hour after 20 wrong codes shop-wide.
-- If Shopify cannot be reached, a paired iPad keeps working from the server's 5-minute cache; an unknown one gets
-  "Could not check this iPad right now" (503), never the pairing screen.
-- `extensions/*/src/deviceAuth.jsx` is the same file in the three extensions: change all three together.
+(The iPad pairing tried in October 2026 was removed. The metaobject definition "POS device" it created, and the
+Render variables DEVICE_PAIRING_CODE / DEVICE_KEY_SECRET, are no longer used and can be deleted.)
 
 ## Deploy
 

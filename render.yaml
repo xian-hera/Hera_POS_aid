@@ -58,12 +58,6 @@ services:
         sync: false
       - key: KLAVIYO_EMAIL_LIST_ID
         sync: false
-      # iPad pairing (for POS accounts without the app permission). DEVICE_PAIRING_CODE: 6+ digits, told to
-      # store managers. DEVICE_KEY_SECRET: 32+ random characters, never shared; changing it un-pairs every iPad.
-      - key: DEVICE_PAIRING_CODE
-        sync: false
-      - key: DEVICE_KEY_SECRET
-        sync: false
       # Restock report page /report: password (10+ characters). Changing it signs everybody out.
       - key: REPORT_PASSWORD
         sync: false

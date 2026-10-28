@@ -2,7 +2,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 
-import { postJson, PairingRequired, PairingScreen, needsPairing } from './deviceAuth.jsx';
+import { postJson } from './deviceAuth.jsx';
 
 export default async () => {
   render(<Extension />, document.body);
@@ -10,7 +10,7 @@ export default async () => {
 
 function errorMessage(status, data) {
   if (status === 401 && data?.error === 'This POS device is not authorized') {
-    return 'This POS device is not authorized. Pair this iPad again (close and reopen this tile).';
+    return 'This POS account cannot use this tile (no access to the app).';
   }
   if (status === 429) return 'Too many scans, please wait a minute and try again.';
   return data?.error || `Verification failed (${status})`;
@@ -42,11 +42,6 @@ function Extension() {
       setCustomer(data);
       setStatus('success');
     } catch (err) {
-      if (err instanceof PairingRequired) {
-        lastScannedRef.current = null;
-        setStatus('pairing');
-        return;
-      }
       setErrorMsg(err.message || 'Network error, please try again.');
       setStatus('error');
     } finally {
@@ -54,15 +49,10 @@ function Extension() {
     }
   };
 
-  // Ask for pairing as soon as the tile opens on an iPad that cannot authenticate
-  useEffect(() => {
-    needsPairing().then((need) => { if (need) setStatus('pairing'); });
-  }, []);
-
   useEffect(() => {
     const unsubscribe = shopify.scanner.scannerData.current.subscribe((result) => {
       if (!result?.data) return;
-      if (status === 'verifying' || status === 'success' || status === 'pairing') return;
+      if (status === 'verifying' || status === 'success') return;
       verifyCustomer(result.data);
     });
     return () => unsubscribe();
@@ -74,10 +64,6 @@ function Extension() {
     setErrorMsg(null);
     lastScannedRef.current = null;
   };
-
-  if (status === 'pairing') {
-    return <PairingScreen onPaired={handleReset} />;
-  }
 
   return (
     <s-page heading="Customer Login">
