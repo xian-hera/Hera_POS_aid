@@ -274,6 +274,23 @@ const MO_PENDING = `
   }
 `;
 
+// Pending requests matching a search (one customer, or one variant), with the customer's name and contact
+const MO_PENDING_SEARCH = `
+  query RestockPendingSearch($q: String!, $after: String) {
+    metaobjects(type: "${TYPE}", first: 100, after: $after, query: $q) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        handle
+        fields { key value }
+        customer: field(key: "customer") {
+          reference { ... on Customer { displayName defaultEmailAddress { emailAddress } defaultPhoneNumber { phoneNumber } } }
+        }
+      }
+    }
+  }
+`;
+
 // ─── Definitions (created automatically on start-up when missing) ────────────
 
 const MO_DEFINITION = `
@@ -284,6 +301,15 @@ const MO_DEFINITION = `
     }
     metafieldDefinitions(first: 1, ownerType: CUSTOMER, namespace: "${METAFIELD_NS}", key: "${METAFIELD_KEY}") {
       nodes { id }
+    }
+  }
+`;
+
+const MO_DEFINITION_UPDATE = `
+  mutation RestockDefinitionUpdate($id: ID!, $definition: MetaobjectDefinitionUpdateInput!) {
+    metaobjectDefinitionUpdate(id: $id, definition: $definition) {
+      metaobjectDefinition { id }
+      userErrors { field message code }
     }
   }
 `;
@@ -332,6 +358,7 @@ const DEFINITION_INPUT = {
     text("product_title", "Product"),
     text("variant_title", "Variant"),
     text("channel", "Notify by", { filterable: true, choices: ["email", "sms"] }),
+    text("notified_channel", "Notified by", { filterable: true, choices: ["email", "sms"], description: "Channel actually used (SMS falls back to email when the customer cannot receive texts)" }),
     { key: "requested_at", name: "Requested at", type: "date_time" },
     { key: "notified_at", name: "Notified at", type: "date_time" },
     { key: "available_at_notify", name: "Available when notified", type: "number_integer" },
@@ -1067,6 +1094,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
                   { key: "status", value: "notified" },
                   { key: "notified_at", value: now },
                   { key: "available_at_notify", value: String(variant.available) },
+                  { key: "notified_channel", value: channel },
                 ],
               },
             }, "metaobjectUpdate");
@@ -1102,6 +1130,106 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
       if (remaining.length !== c.waiting.length) await saveWaitingList(p.customer_id, remaining);
     });
   }
+
+  // ── POS: what a customer waits for, cancel one, who waits for a product (this store only) ──
+
+  // Pending requests matching `filter` (search syntax on filterable fields), at one store
+  async function pendingAt(filter, locationId) {
+    const out = [];
+    let after = null;
+    for (let page = 0; page < 20; page++) {
+      const data = await graphql(MO_PENDING_SEARCH, { q: `${filter} AND fields.status:"pending"`, after });
+      const conn = data.metaobjects;
+      for (const n of conn?.nodes || []) {
+        const f = fieldMap(n);
+        // the search is a first pass: check status and store exactly
+        if (f.status !== "pending" || f.location_id !== locationId) continue;
+        out.push({ id: n.id, handle: n.handle, ...f, contact: n.customer?.reference || null });
+      }
+      if (!conn?.pageInfo?.hasNextPage) break;
+      after = conn.pageInfo.endCursor;
+    }
+    return out.sort((a, b) => String(b.requested_at || "").localeCompare(String(a.requested_at || "")));
+  }
+
+  async function waitingItems(customerId, locationId) {
+    const list = await pendingAt(`fields.customer_id:"${customerId}"`, locationId);
+    const variants = list.length ? await loadVariants([...new Set(list.map((p) => p.variant_id))], locationId) : new Map();
+    return list.map((p) => {
+      const v = variants.get(p.variant_id);
+      return {
+        variantId: p.variant_id,
+        sku: v?.sku || p.sku || "",
+        barcode: v?.barcode || "",
+        productTitle: v?.productTitle || p.product_title || "",
+        variantTitle: v ? v.variantTitle : (p.variant_title || ""),
+        vendor: v?.vendor || "",
+        image: v?.image || "",
+        tracked: v ? v.tracked : false,
+        available: v ? v.available : null,
+        deleted: !v,
+        channel: p.channel || "",
+        requestedAt: p.requested_at || "",
+      };
+    });
+  }
+
+  // Customer page 1: everything this customer waits for at this store
+  app.post("/api/restock/waiting", posLimit, requirePosAuth, async (req, res) => {
+    const customerId = String(req.body?.customerId ?? "");
+    const locationId = String(req.body?.locationId ?? "");
+    if (!isNumericId(customerId)) return badRequest(res, "Invalid customer");
+    if (!isNumericId(locationId)) return badRequest(res, "Invalid location");
+    try {
+      return res.json({ items: await waitingItems(customerId, locationId) });
+    } catch (err) {
+      return fail(res, "waiting", err);
+    }
+  });
+
+  // Remove one product from the customer's list at this store (status → cancelled, kept for the report)
+  app.post("/api/restock/remove", posLimit, requirePosAuth, async (req, res) => {
+    const customerId = String(req.body?.customerId ?? "");
+    const locationId = String(req.body?.locationId ?? "");
+    const variantId = String(req.body?.variantId ?? "");
+    if (!isNumericId(customerId) || !isNumericId(locationId) || !isNumericId(variantId)) return badRequest(res, "Invalid request");
+    try {
+      const list = await pendingAt(`fields.customer_id:"${customerId}" AND fields.variant_id:"${variantId}"`, locationId);
+      for (const p of list) await cancelRequest(p);
+      if (list.length) console.log(`[restock] removed by POS (${req.posUser || "?"}): customer ${customerId} variant ${variantId} @ ${list[0].location_code}`);
+      return res.json({ removed: list.length, items: await waitingItems(customerId, locationId) });
+    } catch (err) {
+      return fail(res, "remove", err);
+    }
+  });
+
+  // Check Item: who waits for this product at this store
+  app.post("/api/restock/item", posLimit, requirePosAuth, async (req, res) => {
+    const locationId = String(req.body?.locationId ?? "");
+    const variantId = String(req.body?.variantId ?? "");
+    if (!isNumericId(locationId) || !isNumericId(variantId)) return badRequest(res, "Invalid request");
+    try {
+      const [list, variants] = await Promise.all([
+        pendingAt(`fields.variant_id:"${variantId}"`, locationId),
+        loadVariants([variantId], locationId),
+      ]);
+      const v = variants.get(variantId);
+      return res.json({
+        threshold: v ? thresholdFor(v) : THRESHOLD,
+        available: v ? v.available : null,
+        customers: list.map((p) => ({
+          customerId: p.customer_id,
+          name: p.contact?.displayName || `Customer ${p.customer_id}`,
+          email: p.contact?.defaultEmailAddress?.emailAddress || "",
+          phone: p.contact?.defaultPhoneNumber?.phoneNumber || "",
+          channel: p.channel || "",
+          requestedAt: p.requested_at || "",
+        })),
+      });
+    } catch (err) {
+      return fail(res, "item", err);
+    }
+  });
 
   // Shopify Flow → "Send HTTP request" (POST, header X-Restock-Key: <RESTOCK_RUN_KEY>)
   // ?dryRun=1 answers with what WOULD be sent, without sending anything or changing data.
@@ -1139,6 +1267,16 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
         const created = await gqlChecked(MO_DEFINITION_CREATE, { definition: DEFINITION_INPUT }, "metaobjectDefinitionCreate");
         console.log(`[restock] created metaobject definition ${created.metaobjectDefinition?.type}`);
       } else {
+        // Fields added after the first release
+        const have = new Set(def.fieldDefinitions.map((f) => f.key));
+        const missing = DEFINITION_INPUT.fieldDefinitions.filter((f) => !have.has(f.key));
+        if (missing.length) {
+          await gqlChecked(MO_DEFINITION_UPDATE, {
+            id: def.id,
+            definition: { fieldDefinitions: missing.map((f) => ({ create: f })) },
+          }, "metaobjectDefinitionUpdate");
+          console.log(`[restock] added metaobject fields: ${missing.map((f) => f.key).join(", ")}`);
+        }
         const status = def.fieldDefinitions.find((f) => f.key === "status");
         if (!status?.capabilities?.adminFilterable?.enabled) {
           console.warn("[restock] metaobject field `status` is not filterable: the stock check may not find pending requests");
@@ -1164,4 +1302,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
   }
 
   ensureSetup();
+
+  // Used by the report page (report.js)
+  return { loadVariants, thresholdFor };
 }
