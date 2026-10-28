@@ -409,6 +409,23 @@ function verifyShopifyIdToken(token) {
   return payload;
 }
 
+// ─── POS request log (diagnostics) ───────────────────────────────────────────
+// One line per POS tile request: result, time, whether a Shopify token came with it, and what the
+// tile reported (POS user, staff member, token state on the iPad). Nothing personal is logged.
+app.use(["/api/restock", "/api/giftcard", "/api/verify"], (req, res, next) => {
+  if (req.method !== "POST") return next();
+  const started = Date.now();
+  res.on("finish", () => {
+    const d = req.body?.diag || {};
+    const clip = (v) => String(v ?? "?").slice(0, 120);
+    console.log(
+      `[pos-req] ${req.originalUrl} → ${res.statusCode} in ${Date.now() - started} ms · token sent: ${req.headers.authorization ? "yes" : "no"}` +
+      ` · iPad token: ${clip(d.token)} · POS user ${clip(req.body?.userId)} · staff ${clip(d.staffMemberId)} · location ${clip(d.locationId)} · POS ${clip(d.posVersion)}`
+    );
+  });
+  next();
+});
+
 // ─── POS authentication ──────────────────────────────────────────────────────
 // Every POS tile request carries a Shopify ID token (Authorization: Bearer …). Shopify only issues it
 // when the account logged in on the POS app has this app in its role (Settings → Users → role → Apps).

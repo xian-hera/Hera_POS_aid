@@ -27,14 +27,34 @@ function withTimeout(call, ms, fallback) {
 }
 
 // Requests made at the same time share one token request.
+// tokenState (sent to the server logs): ok | empty (Shopify gave none) | error (Shopify refused) | timeout
 let tokenInFlight = null;
+let tokenState = 'unknown';
 function sessionToken() {
   if (!tokenInFlight) {
-    tokenInFlight = withTimeout(() => shopify.session.getSessionToken(), 8000, null)
-      .then((t) => (typeof t === 'string' && t ? t : null))
-      .finally(() => { tokenInFlight = null; });
+    tokenInFlight = new Promise((resolve) => {
+      const timer = setTimeout(() => { tokenState = 'timeout'; resolve(null); }, 8000);
+      Promise.resolve()
+        .then(() => shopify.session.getSessionToken())
+        .then((t) => {
+          clearTimeout(timer);
+          const ok = typeof t === 'string' && t.length > 0;
+          tokenState = ok ? 'ok' : `empty(${t === undefined ? 'undefined' : t === null ? 'null' : typeof t})`;
+          resolve(ok ? t : null);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          tokenState = `error(${String(err?.message || err).slice(0, 120)})`;
+          resolve(null);
+        });
+    }).finally(() => { tokenInFlight = null; });
   }
   return tokenInFlight;
+}
+
+function diagnostics() {
+  const s = (() => { try { return shopify.session?.currentSession || {}; } catch { return {}; } })();
+  return { token: tokenState, staffMemberId: s.staffMemberId ?? null, locationId: s.locationId ?? null, posVersion: s.posVersion ?? null };
 }
 
 function currentUserId() {
@@ -73,8 +93,8 @@ async function send(path, body, headers) {
  */
 export async function postJson(path, body) {
   const token = await sessionToken();
-  // userId only helps reading the server logs; the server trusts the token, not this value
-  const resp = await send(path, { ...(body ?? {}), userId: currentUserId() }, token ? { Authorization: `Bearer ${token}` } : {});
+  // userId / diag only help reading the server logs; the server trusts the token, not these values
+  const resp = await send(path, { ...(body ?? {}), userId: currentUserId(), diag: diagnostics() }, token ? { Authorization: `Bearer ${token}` } : {});
   let data = null;
   try { data = await withTimeout(() => resp.json(), 20000, null); } catch { /* non-JSON response */ }
   if (resp.status === 401) throw new NoAppAccess();
