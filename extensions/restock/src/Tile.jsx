@@ -7,7 +7,7 @@ export default async () => {
 
 // While we test, the small text shows the build number, to see at a glance whether this iPad has the
 // latest version. Put back "Log in Customer first" when testing is finished.
-const DEBUG_VERSION = 'debug 2';
+const DEBUG_VERSION = 'debug 3';
 
 function Extension() {
   return (

@@ -5,9 +5,12 @@ import { useState, useEffect, useRef, useErrorBoundary } from 'preact/hooks';
 // Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
 const SERVER_URL = "https://search-0wf4.onrender.com";
 
-// TEMPORARY test switch (debug 2): false = do not show the customer's list when the tile opens
-// (start on the products page, as in the version that worked). Everything else is unchanged.
-const LIST_ON_OPEN = false;
+// TEMPORARY test switches.
+// LIST_ON_OPEN: show the customer's list when the tile opens (debug 2 had it off: that worked).
+// AUTO_SKIP_EMPTY: when that list is empty, jump to the products page by itself. debug 3 keeps the
+// list on but never jumps by itself: the cashier taps Add (empty list shows "Nothing waiting").
+const LIST_ON_OPEN = true;
+const AUTO_SKIP_EMPTY = false;
 
 const MAX_ITEMS = 30;          // same limit as the server
 const MAX_ROWS = 60;           // search results shown at once
@@ -420,6 +423,8 @@ function Extension() {
   // customer page
   const [customer, setCustomer] = useState(null);
   const [customerState, setCustomerState] = useState('idle'); // idle | loading | ready | error
+  const customerStateRef = useRef('idle');
+  customerStateRef.current = customerState;
   const [customerError, setCustomerError] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [phoneInput, setPhoneInput] = useState('');
@@ -473,7 +478,7 @@ function Extension() {
       setListItems(items);
       setListName(c ? `${c.firstName || ''} ${c.lastName || ''}`.trim() : '');
       setListState('ready');
-      if (skipWhenEmpty && !items.length && stepRef.current === 'list') setStep('products');
+      if (AUTO_SKIP_EMPTY && skipWhenEmpty && !items.length && stepRef.current === 'list') setStep('products');
     } catch (err) {
       if (mySeq !== listSeq.current) return;
       setListError(err.message || 'Could not load the list.');
@@ -615,6 +620,10 @@ function Extension() {
     resetCustomerChoices();
     setStep('customer');
     loadCustomer();
+    // TEMPORARY trace: is the tile still running after Next? Sent on their own, outside the queue.
+    for (const sec of [1, 3, 8]) {
+      setTimeout(() => sendLog(`heartbeat ${sec}s after Next · customer=${customerStateRef.current}`), sec * 1000);
+    }
   };
 
   useEffect(() => {
