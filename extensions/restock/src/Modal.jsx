@@ -369,11 +369,6 @@ function Extension() {
   stepRef.current = step;
   tabRef.current = tab;
 
-  // Diagnostics: every screen / loading change goes to the server log ("[pos-ui] restock state …")
-  useEffect(() => {
-    report('state', `${tab}/${step} customer=${customerState} list=${listState} selected=${selected.length}`);
-  }, [tab, step, customerState, listState]);
-
   // Follow the customer attached to the cart (it can change while the modal is open)
   useEffect(() => {
     let unsubscribe = null;
