@@ -43,7 +43,17 @@ async function authHeaders() {
   }
 }
 
-async function api(path, body) {
+// One backend request at a time. The version that always worked made a single request at a time;
+// the customer's list made two at once when the tile opened, and after that the answer for the
+// customer page never reached the tile. So every call waits for the previous one to finish.
+let apiQueue = Promise.resolve();
+function api(path, body) {
+  const run = apiQueue.then(() => apiNow(path, body));
+  apiQueue = run.catch(() => {});
+  return run;
+}
+
+async function apiNow(path, body) {
   const resp = await fetch(`${SERVER_URL}/api/restock/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
@@ -417,10 +427,9 @@ function Extension() {
     setListError('');
     setConfirmRemove('');
     try {
-      const [data, c] = await Promise.all([
-        api('waiting', { customerId, locationId: String(locationId) }),
-        api('customer', { customerId }).catch(() => null),
-      ]);
+      // one after the other (see api())
+      const data = await api('waiting', { customerId, locationId: String(locationId) });
+      const c = await api('customer', { customerId }).catch(() => null);
       if (mySeq !== listSeq.current) return;
       const items = data?.items || [];
       setListItems(items);
@@ -541,13 +550,11 @@ function Extension() {
     setCustomerError('');
     try {
       const data = await api('customer', { customerId });
-      report('customer-data', data ? `keys ${Object.keys(data).join(',')}` : 'empty');
       applyCustomer(data);
       // Pre-select the language from the Shopify profile (empty = English); the cashier confirms it
       setLanguage(data.language === 'fr' ? 'fr' : 'en');
       setCustomerState('ready');
     } catch (err) {
-      report('customer-error', err?.message || String(err));
       setCustomerError(err.message || 'Could not load the customer.');
       setCustomerState('error');
     }
