@@ -5,12 +5,10 @@ import { useState, useEffect, useRef, useErrorBoundary } from 'preact/hooks';
 // Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
 const SERVER_URL = "https://search-0wf4.onrender.com";
 
-// TEMPORARY test switches.
-// LIST_ON_OPEN: show the customer's list when the tile opens (debug 2 had it off: that worked).
-// AUTO_SKIP_EMPTY: when that list is empty, jump to the products page by itself. debug 3 keeps the
-// list on but never jumps by itself: the cashier taps Add (empty list shows "Nothing waiting").
-const LIST_ON_OPEN = true;
-const AUTO_SKIP_EMPTY = false;
+// IMPORTANT (found with debug 2/3, Oct 2026): never change page by itself in this modal.
+// When the tile opened on an empty list and jumped to the products page on its own, every later
+// screen update was lost on the iPad (stuck on "Loading customer..."). Pages change only when the
+// cashier taps something (Add, Next, Back, Confirm...).
 
 const MAX_ITEMS = 30;          // same limit as the server
 const MAX_ROWS = 60;           // search results shown at once
@@ -394,7 +392,7 @@ function Extension() {
 
   const [tab, setTab] = useState('add'); // add | check
   // Add Notify steps: list (what the customer already waits for here) | products | customer | done
-  const [step, setStep] = useState(customerId && LIST_ON_OPEN ? 'list' : 'products');
+  const [step, setStep] = useState(customerId ? 'list' : 'products');
 
   // customer's list (this store)
   const [listItems, setListItems] = useState([]);
@@ -462,8 +460,8 @@ function Extension() {
   }, []);
 
   // ── customer's list at this store ──
-  // skipWhenEmpty: on opening, an empty list goes straight to the products page
-  const loadList = async ({ skipWhenEmpty = false } = {}) => {
+  // Loads what the customer waits for at this store (an empty list shows "Nothing waiting" + Add)
+  const loadList = async () => {
     if (!customerId) return;
     const mySeq = ++listSeq.current;
     setListState('loading');
@@ -478,7 +476,6 @@ function Extension() {
       setListItems(items);
       setListName(c ? `${c.firstName || ''} ${c.lastName || ''}`.trim() : '');
       setListState('ready');
-      if (AUTO_SKIP_EMPTY && skipWhenEmpty && !items.length && stepRef.current === 'list') setStep('products');
     } catch (err) {
       if (mySeq !== listSeq.current) return;
       setListError(err.message || 'Could not load the list.');
@@ -564,9 +561,8 @@ function Extension() {
     if (tabRef.current === 'check') {
       closeCheck();
       checkSearch.scan(value, openCheck);
-    } else if (stepRef.current === 'products' || stepRef.current === 'list') {
-      // scanning on the customer's list goes straight to adding that product
-      if (stepRef.current === 'list') setStep('products');
+    } else if (stepRef.current === 'products') {
+      // (on the customer's list a scan does nothing: the page would have to change by itself)
       addSearch.scan(value, (row) => { if (!alreadyWaitingRef.current(row.variantId)) addItem(row); });
     }
   };
@@ -635,13 +631,9 @@ function Extension() {
     if (step === 'customer') {
       setCustomer(null);
       if (customerId) loadCustomer(); else setCustomerState('idle');
-    } else if (LIST_ON_OPEN && (step === 'list' || step === 'products')) {
-      if (customerId) {
-        setStep('list');
-        loadList({ skipWhenEmpty: true });
-      } else {
-        setStep('products');
-      }
+    } else if (step === 'list' || step === 'products') {
+      // Stay on the same page (never change page by itself); just refresh the customer's list.
+      if (customerId) loadList();
     }
   }, [customerId]);
 
@@ -768,8 +760,8 @@ function Extension() {
     setCustomer(null);
     setDoneInfo(null);
     resetCustomerChoices();
-    setStep(customerId && LIST_ON_OPEN ? 'list' : 'products');
-    if (customerId && LIST_ON_OPEN) loadList();
+    setStep(customerId ? 'list' : 'products');
+    if (customerId) loadList();
   };
 
   const switchTab = (next) => {
