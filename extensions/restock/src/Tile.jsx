@@ -5,15 +5,11 @@ export default async () => {
   render(<Extension />, document.body);
 }
 
-// While we test, the small text shows the build number, to see at a glance whether this iPad has the
-// latest version. Put back "Log in Customer first" when testing is finished.
-const DEBUG_VERSION = 'debug 4';
-
 function Extension() {
   return (
     <s-tile
       heading="Restock Notify"
-      subheading={DEBUG_VERSION}
+      subheading="Log in Customer first"
       onClick={() => shopify.action.presentModal()}
     />
   );

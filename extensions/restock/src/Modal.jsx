@@ -59,41 +59,20 @@ function api(path, body) {
 }
 
 async function apiNow(path, body) {
-  // TEMPORARY trace (server log "[pos-ui] restock trace …"): where a request stops on the iPad
-  // Each trace line is sent (and awaited) before the next step, so the last line in the log shows
-  // the step that never finished, and there is still only one request at a time.
-  const t0 = Date.now();
-  const trace = (step) => sendLog(`trace ${path} ${step} +${Date.now() - t0}ms`);
-  await trace('start');
   const headers = { 'Content-Type': 'application/json', ...(await authHeaders()) };
-  await trace(headers.Authorization ? 'token-ok' : 'token-none');
   const resp = await fetch(`${SERVER_URL}/api/restock/${path}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
   });
-  await trace(`answer-${resp.status}`);
   let data = null;
-  try { data = await resp.json(); } catch (err) { await trace(`body-error ${err?.message || err}`); }
-  await trace('body-read');
+  try { data = await resp.json(); } catch { /* non-JSON response */ }
   if (!resp.ok) {
     if (resp.status === 401) throw new Error('This POS account cannot use this tile: in Shopify admin → Settings → Users, the role of the account logged in on this iPad needs access to the app Hera_POS_aid.');
     if (resp.status === 429) throw new Error('Too many requests, please wait a minute and try again.');
     throw new Error(data?.error || `Request failed (${resp.status})`);
   }
   return data;
-}
-
-// Send one log line now and wait for it (used inside the request queue).
-async function sendLog(line) {
-  try {
-    const r = await fetch(`${SERVER_URL}/api/pos/clientlog`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tile: 'restock', line: String(line).slice(0, 500), userId: shopify.session?.currentSession?.userId ?? null }),
-    });
-    await r.text();
-  } catch { /* never break the tile for a log line */ }
 }
 
 // Diagnostics: short events in the server log as "[pos-ui] restock …" (no personal data).
@@ -421,8 +400,6 @@ function Extension() {
   // customer page
   const [customer, setCustomer] = useState(null);
   const [customerState, setCustomerState] = useState('idle'); // idle | loading | ready | error
-  const customerStateRef = useRef('idle');
-  customerStateRef.current = customerState;
   const [customerError, setCustomerError] = useState('');
   const [emailInput, setEmailInput] = useState('');
   const [phoneInput, setPhoneInput] = useState('');
@@ -442,10 +419,6 @@ function Extension() {
   stepRef.current = step;
   tabRef.current = tab;
 
-  // TEMPORARY trace: every screen change after it is shown on the iPad
-  useEffect(() => {
-    report('trace', `screen ${tab}/${step} customer=${customerState} list=${listState}`);
-  }, [tab, step, customerState, listState]);
 
   // Follow the customer attached to the cart (it can change while the modal is open)
   useEffect(() => {
@@ -589,7 +562,6 @@ function Extension() {
     setCustomerError('');
     try {
       const data = await api('customer', { customerId });
-      report('trace', `page2 got customer data (${data ? 'yes' : 'no'})`);
       applyCustomer(data);
       // Pre-select the language from the Shopify profile (empty = English); the cashier confirms it
       setLanguage(data.language === 'fr' ? 'fr' : 'en');
@@ -616,10 +588,6 @@ function Extension() {
     resetCustomerChoices();
     setStep('customer');
     loadCustomer();
-    // TEMPORARY trace: is the tile still running after Next? Sent on their own, outside the queue.
-    for (const sec of [1, 3, 8]) {
-      setTimeout(() => sendLog(`heartbeat ${sec}s after Next · customer=${customerStateRef.current}`), sec * 1000);
-    }
   };
 
   useEffect(() => {
