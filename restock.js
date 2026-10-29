@@ -101,11 +101,13 @@ export function itemsText(items) {
   return items.map(itemLabel).join(", ");
 }
 
-// Short version for SMS: at most 2 items, then "and 3 more", e.g. "Wig Pop Nadia - #1B, Aphogee Shampoo 16oz and 3 more"
-export function itemsShort(items, max = 2) {
+// Short version for SMS: at most 2 items, then "and 3 more" (French: "et 3 autres"),
+// e.g. "Wig Pop Nadia - #1B, Aphogee Shampoo 16oz and 3 more"
+export function itemsShort(items, max = 2, language = "en") {
   const shown = items.slice(0, max).map(itemLabel).join(", ");
   const rest = items.length - max;
-  return rest > 0 ? `${shown} and ${rest} more` : shown;
+  if (rest <= 0) return shown;
+  return language === "fr" ? `${shown} et ${rest} ${rest === 1 ? "autre" : "autres"}` : `${shown} and ${rest} more`;
 }
 
 // Location metafield custom.display_name: single line text. Also accepts a list (uses the first value).
@@ -943,7 +945,7 @@ export function registerRestock(app, { graphql, requirePosAuth, rateLimit, safeE
             first_image_url: items[0]?.image_url || "",
             // Ready-made text for SMS (SMS templates cannot loop over items)
             items_text: itemsText(items),
-            items_short: itemsShort(items),
+            items_short: itemsShort(items, 2, languageOf(customer.locale)),
             items,
             shopify_customer_id: customer.id,
           },
