@@ -248,13 +248,14 @@ National Address Register (NAR, free, Open Licence), as two files in `data/`.
 Block settings (checkout editor → Thank you page → the block): banner or card, colors, border, corners,
 padding, pill, button styles, and optional English / French texts (empty = built-in text in `locales/`).
 
-**Update the NAR data (every quarter, new release at
-https://www150.statcan.gc.ca/n1/pub/46-26-0002/462600022022001-eng.htm):**
+**Update the NAR data (about twice a year, usually June and December):**
 
-1. Download and unzip the new zip; only the `Addresses` folder is needed.
-2. `node tools/nar-refine.js "<…>\Addresses"` → `NAR_refined` (one small CSV per province)
-3. `node tools/nar-index.js "<…>\NAR_refined"` → `data/nar-all.bin.gz` and `data/nar-multi.tsv.gz`
-4. Commit `data/` and push; Render deploys.
+1. Download the newest zip (about 1.6 GB, "Reference period" list, e.g. `202612.zip`) from
+   https://www150.statcan.gc.ca/n1/pub/46-26-0002/462600022022001-eng.htm
+2. Drag the zip onto `tools\update-nar.bat` (or run `tools\update-nar.bat "<path>\202612.zip"`). It unzips,
+   runs `nar-refine.js` and `nar-index.js`, re-tests `tools/nar-test-addresses.txt` (if present), then asks
+   before `git commit` + `git push` of `data/` (Render deploys) and before deleting the unzipped files.
+3. After the deploy, the Render log shows `[nar] loaded … civic addresses and … multi-unit buildings`.
 
 Testing tools: `node tools/nar-lookup.js "<NAR_refined>"` (type addresses one by one) and
 `node tools/nar-batch.js "<NAR_refined>" tools/nar-test-addresses.txt` (a list; that file is not committed).
