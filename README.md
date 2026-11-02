@@ -20,7 +20,9 @@ Hera_POS_aid/
 └─ extensions/
    ├─ login/               POS tile "Customer Login": scans the Wallet card barcode
    ├─ giftcard/            POS tile "Gift Card Sale"
-   └─ restock/             POS tile "Restock Notify" (backend: restock.js)
+   ├─ restock/             POS tile "Restock Notify" (backend: restock.js)
+   ├─ memo/                POS tile "MEMO" (backend: memo.js)
+   └─ points-probe/        TEST ONLY: background extension (no tile) that logs cart events; remove after the test
                            (add future POS tiles as new folders here)
 ```
 
@@ -34,6 +36,7 @@ Hera_POS_aid/
 | `POST /api/giftcard/status` | POS "Gift Card Sale" tile | Checks a scanned activation serial (B): genuine or not, already activated or not. Always requires a POS session token, whatever `POS_AUTH_MODE` says. Never returns the redeem code. |
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
+| `POST /api/memo/list`, `/save`, `/delete`, `/unlock` | POS "MEMO" tile | Store memos and Global memos (metaobject `pos_memo`). Global changes need an unlock token (30 min) obtained with `MEMO_PASSWORD`. POS session token always required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
@@ -60,6 +63,7 @@ once and then migrated automatically.
 | `KLAVIYO_EMAIL_LIST_ID` | Optional. When set, email subscriptions made at POS are also sent to Klaviyo and added to this list. Off by default (the Shopify email sync is used). |
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
+| `MEMO_PASSWORD` | Password that unlocks editing of Global memos in the MEMO tile for 30 minutes on that iPad (6+ characters). Changing it locks every iPad again. Global editing is off when it is missing. |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
@@ -186,6 +190,20 @@ page: `report/index.html` (all grouping and filtering happen in the browser), si
 - `notified_channel` (metaobject field, added automatically at start-up) records the channel actually used, so
   "asked SMS, sent by email" can be counted. Records notified before it existed show the requested channel.
 - Data is cached 2 minutes; **Refresh** reloads from Shopify.
+
+## MEMO (POS)
+
+Tile "MEMO": quick lookup of important info. Code: `extensions/memo/` and `memo.js`.
+
+- Two tabs: **this store** (everyone at that store can add, edit, pin and delete) and **Global** (shown at every
+  store; locked until someone taps the lock and enters `MEMO_PASSWORD`, then unlocked on that iPad for 30 minutes).
+- Each memo is one `pos_memo` metaobject (merchant-owned, created automatically at start-up, visible in
+  Shopify admin → Content → Metaobjects): scope, location, title, text, pinned, card size (S/L), updated at/by.
+- Text is shown line by line as typed; an empty line adds space; `[Name]` is shown as a pill.
+- Cards: Small = 1/5 of the width, Large = 2/5. Pinned first (red dot), then A→Z. With 5 memos or fewer the
+  cards are tall and show the full text; with more, they get shorter.
+- If two iPads edit the same memo, the second save is refused and the cashier can reopen their text.
+- During tests the tile subheading is `debug N`; final text: "Quick lookup of important info".
 
 ## Deploy
 

@@ -19,6 +19,7 @@ import { readFileSync } from "fs";
 import { createGiftCardService, lookupBalance } from "./giftcard.js";
 import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
 import { registerReport } from "./report.js";
+import { registerMemo } from "./memo.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -390,7 +391,7 @@ app.use((req, res, next) => {
 // ─── POS request log (diagnostics) ───────────────────────────────────────────
 // One line per POS tile request (result, time, token sent or not, POS user / staff reported by the tile),
 // plus short events the tiles send to /api/pos/clientlog. Nothing personal is logged.
-app.use(["/api/restock", "/api/giftcard", "/api/verify"], (req, res, next) => {
+app.use(["/api/restock", "/api/giftcard", "/api/verify", "/api/memo"], (req, res, next) => {
   if (req.method !== "POST") return next();
   const started = Date.now();
   res.on("finish", () => {
@@ -593,6 +594,16 @@ app.post(
 // POS routes always require a valid POS session token (they return customer contact details).
 
 const restockHelpers = registerRestock(app, {
+  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 20000, attempts: 2 }),
+  requirePosAuth: requirePosAuthStrict,
+  rateLimit,
+  safeEqual,
+});
+
+// ─── POS: MEMO tile (memo.js) ─────────────────────────────────────────────────
+// Store memos + Global memos (Global editing unlocked with MEMO_PASSWORD for 30 minutes).
+
+registerMemo(app, {
   graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 20000, attempts: 2 }),
   requirePosAuth: requirePosAuthStrict,
   rateLimit,
