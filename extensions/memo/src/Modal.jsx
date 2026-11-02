@@ -5,6 +5,9 @@ import { useState, useEffect, useErrorBoundary } from 'preact/hooks';
 // Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
 const SERVER_URL = "https://search-0wf4.onrender.com";
 
+// Each page has its own key, so POS builds a new page instead of reshaping the previous one
+// (debug 3: tapping Add sometimes failed inside POS while the list was turned into the editor).
+//
 // IMPORTANT (lesson from Restock Notify, Oct 2026): never change page by itself in a modal.
 // A page change that happened on its own after a network answer froze every later screen update
 // on the iPad. Here every page change happens inside the cashier's tap. Saving and deleting are
@@ -12,6 +15,7 @@ const SERVER_URL = "https://search-0wf4.onrender.com";
 // says no, a banner explains it (and a failed text can be reopened).
 
 const UNLOCK_STORAGE_KEY = 'memo-global-unlock';
+let currentPage = 'list'; // for error reports only
 const MAX_TITLE = 80;
 const MAX_BODY = 4000;
 const PILL_RE = /\[([^\[\]\n]{1,40})\]/g;
@@ -22,7 +26,11 @@ export default async () => {
 
 // A screen error is shown (and written to the server log) instead of leaving a frozen page.
 function Boundary({ children }) {
-  const [error, resetError] = useErrorBoundary((err) => report('render-error', String(err?.stack || err).slice(0, 400)));
+  // The message first (the stack of a POS error is a long encoded file name), then the start of the stack.
+  const [error, resetError] = useErrorBoundary((err) => report(
+    'render-error',
+    `${err?.name || 'Error'}: ${err?.message || err} | page ${currentPage} | ${String(err?.stack || '').replace(/data:text\/javascript[^\s)]*/g, '<code>').slice(0, 300)}`
+  ));
   if (error) {
     return (
       <s-page heading="MEMO">
@@ -187,9 +195,12 @@ function MemoCard({ memo, tier, onOpen, style }) {
     );
   } else if (style === 'B') {
     card = (
-      <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${title}`}>
-        <s-stack direction="block" gap="small-200">{body}{saving}</s-stack>
-      </s-banner>
+      // POS banners show only their heading: the colored banner is the title bar, the text goes below.
+      <s-stack direction="block" gap="small-200">
+        <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${title}`} />
+        {body}
+        {saving}
+      </s-stack>
     );
   } else {
     card = (
@@ -205,8 +216,11 @@ function MemoCard({ memo, tier, onOpen, style }) {
     );
   }
   return (
-    <s-box inlineSize={wide ? '39%' : '19%'} minBlockSize={tier.height}>
-      <s-clickable onClick={onOpen}>{card}</s-clickable>
+    // Exactly 1/5 (or 2/5) of the row; the space between cards is padding inside, so 5 always fit.
+    <s-box inlineSize={wide ? '40%' : '20%'} minBlockSize={tier.height}>
+      <s-box padding="small-200">
+        <s-clickable onClick={onOpen}>{card}</s-clickable>
+      </s-box>
     </s-box>
   );
 }
@@ -230,7 +244,8 @@ function fmtDate(iso) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 function Extension() {
-  const [page, setPage] = useState('list');        // list | detail | edit | unlock
+  const [page, setPage] = useState('list');
+  currentPage = page;                               // list | detail | edit | unlock
   const [tab, setTab] = useState('local');         // local | global
   const [data, setData] = useState(null);          // { locationName, local, global, unlockAvailable }
   const [loadState, setLoadState] = useState('loading');
@@ -430,7 +445,7 @@ function Extension() {
   // ─── Unlock Global ─────────────────────────────────────────────────────────
   if (page === 'unlock') {
     return (
-      <s-page heading="MEMO" subheading="Unlock Global">
+      <s-page key="unlock" heading="MEMO" subheading="Unlock Global">
         <s-scroll-box>
           <s-box padding="base">
             <s-stack direction="block" gap="base">
@@ -467,7 +482,7 @@ function Extension() {
   if (page === 'edit' && draft) {
     const scopeName = draft.scope === 'global' ? 'Global' : locationName;
     return (
-      <s-page heading="MEMO" subheading={`${draft.id ? 'Edit memo' : 'New memo'} · ${scopeName}`}>
+      <s-page key="edit" heading="MEMO" subheading={`${draft.id ? 'Edit memo' : 'New memo'} · ${scopeName}`}>
         <s-scroll-box>
           <s-box padding="base">
             <s-stack direction="block" gap="base">
@@ -525,7 +540,7 @@ function Extension() {
     const memo = findMemo(openId);
     const editable = memo && canEditScope(memo.scope) && !memo.saving;
     return (
-      <s-page heading="MEMO" subheading={memo?.scope === 'global' ? 'Global · all stores' : `${locationName} · this store`}>
+      <s-page key="detail" heading="MEMO" subheading={memo?.scope === 'global' ? 'Global · all stores' : `${locationName} · this store`}>
         <s-scroll-box>
           <s-box padding="base">
             <s-stack direction="block" gap="base">
@@ -541,9 +556,10 @@ function Extension() {
               ) : (
                 <s-stack direction="block" gap="base">
                   {cardStyle === 'B' ? (
-                    <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${memo.title}`}>
+                    <s-stack direction="block" gap="base">
+                      <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${memo.title}`} />
                       <MemoText text={memo.body} />
-                    </s-banner>
+                    </s-stack>
                   ) : (
                     <s-section heading={`${memo.pinned ? '● ' : ''}${memo.title}`}>
                       <MemoText text={memo.body} />
@@ -580,7 +596,7 @@ function Extension() {
   const tier = tierFor(memos.length);
   const tabEditable = canEditScope(tab === 'global' ? 'global' : 'location');
   return (
-    <s-page heading="MEMO" subheading={tab === 'global' ? 'Global · all stores' : data ? `${locationName} · this store` : 'This store'}>
+    <s-page key="list" heading="MEMO" subheading={tab === 'global' ? 'Global · all stores' : data ? `${locationName} · this store` : 'This store'}>
       <s-scroll-box>
         <s-box padding="base">
           <s-stack direction="block" gap="base">
@@ -619,7 +635,7 @@ function Extension() {
               </s-text>
             )}
             {loadState === 'ready' && memos.length > 0 && (
-              <s-stack direction="inline" gap="small">
+              <s-stack direction="inline" gap="none">
                 {memos.map((m) => <MemoCard key={m.id} memo={m} tier={tier} style={cardStyle} onOpen={() => openMemo(m)} />)}
               </s-stack>
             )}

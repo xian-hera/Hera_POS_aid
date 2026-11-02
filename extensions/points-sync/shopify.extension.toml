@@ -5,6 +5,7 @@ type = "ui_extension"
 name = "Points on receipt"
 # `uid` is added automatically by `shopify app deploy` the first time
 handle = "points-sync"
+uid = "d907938f-1cc4-6318-15a0-88809ac404f387626530"
 description = "Background (no tile): sends the cart to the backend so the receipt can print the customer's points including this sale."
 
 [[extensions.targeting]]
