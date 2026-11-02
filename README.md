@@ -22,7 +22,7 @@ Hera_POS_aid/
    ├─ giftcard/            POS tile "Gift Card Sale"
    ├─ restock/             POS tile "Restock Notify" (backend: restock.js)
    ├─ memo/                POS tile "MEMO" (backend: memo.js)
-   └─ points-probe/        TEST ONLY: background extension (no tile) that logs cart events; remove after the test
+   └─ points-sync/         Background extension (no tile): sends the cart for the receipt points (backend: points.js)
                            (add future POS tiles as new folders here)
 ```
 
@@ -37,6 +37,7 @@ Hera_POS_aid/
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/memo/list`, `/save`, `/delete`, `/unlock` | POS "MEMO" tile | Store memos and Global memos (metaobject `pos_memo`). Global changes need an unlock token (30 min) obtained with `MEMO_PASSWORD`. POS session token always required. |
+| `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Smile balance, estimates this sale's points and writes `custom.receipt_points_*` for the receipt. POS session token always required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
@@ -64,6 +65,7 @@ once and then migrated automatically.
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
 | `MEMO_PASSWORD` | Password that unlocks editing of Global memos in the MEMO tile for 30 minutes on that iPad (6+ characters). Changing it locks every iPad again. Global editing is off when it is missing. |
+| `POINTS_MULTIPLIER` | Optional. Points campaign multiplier for the receipt estimate (e.g. `2`). Default `1`. |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
@@ -204,6 +206,22 @@ Tile "MEMO": quick lookup of important info. Code: `extensions/memo/` and `memo.
   cards are tall and show the full text; with more, they get shorter.
 - If two iPads edit the same memo, the second save is refused and the cashier can reopen their text.
 - During tests the tile subheading is `debug N`; final text: "Quick lookup of important info".
+
+## Points on the receipt (POS)
+
+Goal: the printed receipt shows the customer's points **including this sale**. Code: `extensions/points-sync/`
+(background, API 2026-07, no tile) and `points.js`.
+
+1. When the cart has a customer and items and stops changing for 1.2 s, the extension sends it to `/api/points/preview`.
+2. The backend reads the Smile balance (by email), estimates the sale's points and writes 4 customer metafields
+   (definitions created automatically at start-up): `custom.receipt_points_before`, `_earned`, `_total`,
+   `_subtotal` (pre-tax amount in cents; `-1` = no estimate).
+3. The receipt's custom Liquid block prints `receipt_points_total` when `receipt_points_subtotal` equals the
+   order's subtotal, otherwise `custom.points_balance`, plus a note that the official balance is on the website.
+
+Rules (Smile, Nov 2026): 1 point per $1 paid before tax, rounded down; products with a compare-at price and gift
+cards earn nothing. Order-level discounts are shared between lines in proportion to their amounts.
+Campaigns: set `POINTS_MULTIPLIER`. `custom.points_balance` (Apple Wallet) is not touched by this feature.
 
 ## Deploy
 

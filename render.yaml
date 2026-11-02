@@ -64,6 +64,9 @@ services:
       # MEMO tile: password that unlocks editing of Global memos for 30 minutes (6+ characters)
       - key: MEMO_PASSWORD
         sync: false
+      # Receipt points: campaign multiplier for the estimate (optional, default 1)
+      - key: POINTS_MULTIPLIER
+        sync: false
       # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
       - key: POS_AUTH_MODE
         sync: false

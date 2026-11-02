@@ -2,10 +2,10 @@ api_version = "2026-07"
 
 [[extensions]]
 type = "ui_extension"
-name = "Points probe"
+name = "Points on receipt"
 # `uid` is added automatically by `shopify app deploy` the first time
-handle = "points-probe"
-description = "Test only: checks that a background POS extension starts by itself and sees cart changes. Sends short lines to the Render log; writes nothing."
+handle = "points-sync"
+description = "Background (no tile): sends the cart to the backend so the receipt can print the customer's points including this sale."
 
 [[extensions.targeting]]
 module = "./src/index.js"

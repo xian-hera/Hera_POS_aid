@@ -6,6 +6,7 @@ type = "ui_extension"
 name = "t:name"
 # `uid` is added automatically by `shopify app deploy` the first time
 handle = "memo"
+uid = "0a87351a-6bc7-0c2a-1d5c-62fe76ec51ffc54af1fc"
 description = "MEMO: quick lookup of important info (store memos + Global memos for all stores)"
 
 [[extensions.targeting]]

@@ -20,6 +20,7 @@ import { createGiftCardService, lookupBalance } from "./giftcard.js";
 import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
 import { registerReport } from "./report.js";
 import { registerMemo } from "./memo.js";
+import { registerPoints } from "./points.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -391,7 +392,7 @@ app.use((req, res, next) => {
 // ─── POS request log (diagnostics) ───────────────────────────────────────────
 // One line per POS tile request (result, time, token sent or not, POS user / staff reported by the tile),
 // plus short events the tiles send to /api/pos/clientlog. Nothing personal is logged.
-app.use(["/api/restock", "/api/giftcard", "/api/verify", "/api/memo"], (req, res, next) => {
+app.use(["/api/restock", "/api/giftcard", "/api/verify", "/api/memo", "/api/points"], (req, res, next) => {
   if (req.method !== "POST") return next();
   const started = Date.now();
   res.on("finish", () => {
@@ -608,6 +609,17 @@ registerMemo(app, {
   requirePosAuth: requirePosAuthStrict,
   rateLimit,
   safeEqual,
+});
+
+// ─── POS: points printed on the receipt (points.js) ───────────────────────────
+// The background extension "points-sync" sends the cart; the receipt's Liquid block prints the result.
+
+registerPoints(app, {
+  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 15000, attempts: 2 }),
+  requirePosAuth: requirePosAuthStrict,
+  rateLimit,
+  smileApiKey: SMILE_API_KEY,
+  giftProductId: GIFT_PRODUCT_ID,
 });
 
 // Head-office report of restock requests: /report (password: REPORT_PASSWORD). See report.js.
