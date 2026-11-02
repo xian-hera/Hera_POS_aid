@@ -50,7 +50,10 @@ function readSettings() {
 }
 
 export function UnitCheck({ orderId, number }) {
-  const [phase, setPhase] = useState('loading'); // loading | hidden | ask | confirm | done-unit | done-none
+  // In the checkout editor the order is a sample: always show the question (no server calls),
+  // so the block and its settings can be previewed. The buttons only change the preview.
+  const inEditor = Boolean(shopify.extension?.editor);
+  const [phase, setPhase] = useState(inEditor ? 'ask' : 'loading'); // loading | hidden | ask | confirm | done-unit | done-none
   const [unit, setUnit] = useState('');
   const [savedUnit, setSavedUnit] = useState('');
   const [busy, setBusy] = useState(false);
@@ -62,6 +65,7 @@ export function UnitCheck({ orderId, number }) {
   const text = (key) => String(cfg.raw[`${key}_${fr ? 'fr' : 'en'}`] || '').trim() || t(key);
 
   useEffect(() => {
+    if (inEditor) return undefined;
     if (!orderId || !number) { setPhase('hidden'); return undefined; }
     let stopped = false;
     let tries = 0;
@@ -88,6 +92,12 @@ export function UnitCheck({ orderId, number }) {
   async function answer(choice) {
     setError('');
     if (choice === 'unit' && !unit.trim()) { setError(t('invalidUnit')); return; }
+    if (inEditor) { // preview only: show the result screen, then come back to the question
+      if (choice === 'unit') setSavedUnit(unit.trim());
+      setPhase(choice === 'unit' ? 'done-unit' : 'done-none');
+      setTimeout(() => setPhase('ask'), 3000);
+      return;
+    }
     setBusy(true);
     try {
       await post('answer', { orderId, number, choice, unit: choice === 'unit' ? unit : '' });

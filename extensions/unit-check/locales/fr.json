@@ -1,5 +1,5 @@
 {
-  "name": "Vérification du numéro d'unité",
+  "name": "Unit No. Alert",
   "pill": "Action requise",
   "heading": "Votre numéro d'unité est-il manquant?",
   "body": "Votre adresse de livraison semble correspondre à un immeuble à plusieurs unités (appartement, condo ou bureau). Sans numéro d'unité, Postes Canada pourrait ne pas pouvoir livrer votre commande, qui risque alors de nous être retournée.",

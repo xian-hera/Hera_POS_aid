@@ -2,10 +2,9 @@ api_version = "2026-07"
 
 [[extensions]]
 type = "ui_extension"
-# Merchant-facing name: see locales/en.default.json
-name = "t:name"
+# Merchant-facing name (shown in the checkout editor)
+name = "Unit No. Alert"
 handle = "unit-check"
-uid = "d0cb15d3-6c0b-2923-7ebd-ca373ed4b10b6a93e3d5"
 # `uid` is added automatically by `shopify app deploy` the first time
 description = "Thank you / Order status page: asks for the unit number when the building has several units (see address.js)"
 

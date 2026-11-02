@@ -1,5 +1,5 @@
 {
-  "name": "Unit number check",
+  "name": "Unit No. Alert",
   "pill": "Action needed",
   "heading": "Is your unit number missing?",
   "body": "Your shipping address looks like a building with several units (apartment, condo or office). Without a unit number, Canada Post may not be able to deliver your order and it could be returned to us.",
