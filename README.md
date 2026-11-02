@@ -38,6 +38,7 @@ Hera_POS_aid/
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/memo/list`, `/save`, `/delete`, `/unlock` | POS "MEMO" tile | Store memos and Global memos (metaobject `pos_memo`). Global changes need an unlock token (30 min) obtained with `MEMO_PASSWORD`. POS session token always required. |
 | `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Smile balance, estimates this sale's points and writes `custom.receipt_points_*` for the receipt. POS session token always required. |
+| `POST /api/address/check` | Shopify Flow ("Order created", online orders) | Checks the shipping address: when it has no unit number and Canada Post AddressComplete says the building has several units, answers `needsReview: true` (Flow then tags the order). Needs header `X-Address-Key`. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
@@ -66,6 +67,8 @@ once and then migrated automatically.
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
 | `MEMO_PASSWORD` | Password that unlocks editing of Global memos in the MEMO tile for 30 minutes on that iPad (6+ characters). Changing it locks every iPad again. Global editing is off when it is missing. |
 | `POINTS_MULTIPLIER` | Optional. Points campaign multiplier for the receipt estimate (e.g. `2`). Default `1`. |
+| `ADDRESS_CHECK_KEY` | 24+ random characters. Shopify Flow sends it in the `X-Address-Key` header of the unit number check. The check is disabled if it is missing. |
+| `CANADAPOST_AC_KEY` | Canada Post AddressComplete API key, used by the unit number check. |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
@@ -222,6 +225,18 @@ Goal: the printed receipt shows the customer's points **including this sale**. C
 Rules (Smile, Nov 2026): 1 point per $1 paid before tax, rounded down; products with a compare-at price and gift
 cards earn nothing. Order-level discounts are shared between lines in proportion to their amounts.
 Campaigns: set `POINTS_MULTIPLIER`. `custom.points_balance` (Apple Wallet) is not touched by this feature.
+
+## Unit number check (online orders)
+
+Code: `address.js`. Shopify Flow calls `/api/address/check` for every new order that is not from POS:
+
+- **Unit given** (nothing to do): address line 2 is filled, or line 1 has `12-345 …`, `#12`, `apt/app/unit/suite/bureau/logement 12`…
+- Otherwise the address is looked up in Canada Post AddressComplete (Interactive Find). If the civic address is a
+  building with several units (a container such as "24 Addresses", or several `unit-345 …` results), the answer is
+  `{"needsReview": true, "status": "unit-missing"}` and Flow adds the tag (e.g. `Check unit`).
+- Other answers: `unit-given`, `single-unit`, `skipped` (no address / not Canada), `error` (AddressComplete
+  unavailable: the order is not tagged; see the Render log line `[address] …`).
+- Lookups are cached 7 days per address.
 
 ## Deploy
 

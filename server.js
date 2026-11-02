@@ -21,6 +21,7 @@ import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
 import { registerReport } from "./report.js";
 import { registerMemo } from "./memo.js";
 import { registerPoints } from "./points.js";
+import { registerAddressCheck } from "./address.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -621,6 +622,11 @@ registerPoints(app, {
   smileApiKey: SMILE_API_KEY,
   giftProductId: GIFT_PRODUCT_ID,
 });
+
+// ─── Shopify Flow: unit number check for online orders (address.js) ──────────
+// Flow sends the shipping address; the answer says whether the order needs a human look (Flow adds the tag).
+
+registerAddressCheck(app, { rateLimit, safeEqual });
 
 // Head-office report of restock requests: /report (password: REPORT_PASSWORD). See report.js.
 registerReport(app, {

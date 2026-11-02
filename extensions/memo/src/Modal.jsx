@@ -131,24 +131,41 @@ function splitPills(line) {
   return parts.filter((p) => p.pill || p.text.trim());
 }
 
+// One piece of a line: plain text and [pills].
+function LineParts({ text, maxChars }) {
+  const parts = splitPills(text);
+  if (!parts.length) return null;
+  if (!parts.some((p) => p.pill)) return <s-text>{clip(text.trim(), maxChars)}</s-text>;
+  return (
+    <s-stack direction="inline" gap="small-200" alignItems="center">
+      {parts.map((p, j) => (p.pill
+        ? <s-badge key={j}>{clip(p.pill, maxChars)}</s-badge>
+        : <s-text key={j}>{clip(p.text.trim(), maxChars)}</s-text>))}
+    </s-stack>
+  );
+}
+
+// "left | right" = two columns: every left column has the same width, so the right ones line up.
 function MemoText({ text, maxLines, maxChars }) {
   const lines = String(text || '').split('\n');
   if (!text) return null;
   const shown = maxLines ? lines.slice(0, maxLines) : lines;
   const more = maxLines && lines.length > maxLines;
+  const half = maxChars ? Math.max(6, Math.floor(maxChars / 2)) : undefined;
   return (
     <s-stack direction="block" gap="small-300">
       {shown.map((line, i) => {
         if (!line.trim()) return <s-box key={i} paddingBlock="small-200" />;
-        const parts = splitPills(line);
-        if (!parts.some((p) => p.pill)) return <s-text key={i}>{clip(line, maxChars)}</s-text>;
-        return (
-          <s-stack key={i} direction="inline" gap="small-200" alignItems="center">
-            {parts.map((p, j) => (p.pill
-              ? <s-badge key={j}>{clip(p.pill, maxChars)}</s-badge>
-              : <s-text key={j}>{clip(p.text.trim(), maxChars)}</s-text>))}
-          </s-stack>
-        );
+        const bar = line.indexOf('|');
+        if (bar >= 0) {
+          return (
+            <s-stack key={i} direction="inline" gap="none" alignItems="center">
+              <s-box inlineSize="40%"><LineParts text={line.slice(0, bar)} maxChars={half} /></s-box>
+              <s-box inlineSize="60%"><LineParts text={line.slice(bar + 1)} maxChars={half} /></s-box>
+            </s-stack>
+          );
+        }
+        return <s-box key={i}><LineParts text={line} maxChars={maxChars} /></s-box>;
       })}
       {more && <s-text color="subdued">…</s-text>}
     </s-stack>
@@ -169,18 +186,31 @@ function sortMemos(list) {
   return [...list].sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || a.title.localeCompare(b.title));
 }
 
-// Card colors (Banner tones; used by card style B). "auto" = neutral grey.
+// Title colors = Badge tones (style E). Memos saved earlier with "auto" are shown grey.
 const COLORS = [
-  { value: 'auto', label: 'Grey' },
+  { value: 'neutral', label: 'Grey' },
   { value: 'info', label: 'Blue' },
   { value: 'success', label: 'Green' },
-  { value: 'warning', label: 'Yellow' },
+  { value: 'caution', label: 'Yellow' },
+  { value: 'warning', label: 'Orange' },
   { value: 'critical', label: 'Red' },
 ];
-const toneOf = (memo) => (COLORS.some((c) => c.value === memo.color) ? memo.color : 'auto');
+const toneOf = (memo) => (COLORS.some((c) => c.value === memo.color) ? memo.color : 'neutral');
 
-// debug 2: three card styles to compare on the iPad (POS boxes have no background or border).
-//   A = Section with the title as its heading   B = Banner (colored)   C = plain text + divider line
+// The title as a colored pill (style E), with the red dot when pinned.
+function TitlePill({ memo, maxChars }) {
+  return (
+    <s-stack direction="inline" gap="small-200" alignItems="center">
+      {memo.pinned && <s-text tone="critical">●</s-text>}
+      <s-badge tone={toneOf(memo)}>{clip(memo.title, maxChars)}</s-badge>
+    </s-stack>
+  );
+}
+
+// Card styles to compare on the iPad (POS boxes have no background or border):
+//   A = Section with the title as its heading   C = plain title + divider line
+//   E = colored title pill + divider line
+// (B = Banner was dropped in debug 5: POS banners show no text and always carry an icon.)
 function MemoCard({ memo, tier, onOpen, style }) {
   const wide = memo.size === 'L';
   const title = clip(memo.title, wide ? 64 : 28);
@@ -193,13 +223,13 @@ function MemoCard({ memo, tier, onOpen, style }) {
         <s-stack direction="block" gap="small-200">{body}{saving}</s-stack>
       </s-section>
     );
-  } else if (style === 'B') {
+  } else if (style === 'E') {
     card = (
-      // POS banners show only their heading: the colored banner is the title bar, the text goes below.
       <s-stack direction="block" gap="small-200">
-        <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${title}`} />
+        <TitlePill memo={memo} maxChars={wide ? 48 : 20} />
         {body}
         {saving}
+        <s-divider />
       </s-stack>
     );
   } else {
@@ -261,7 +291,7 @@ function Extension() {
   const [password, setPassword] = useState('');
   const [unlockBusy, setUnlockBusy] = useState(false);
   const [unlockError, setUnlockError] = useState('');
-  const [cardStyle, setCardStyle] = useState('B'); // debug 2 only: A | B | C
+  const [cardStyle, setCardStyle] = useState('E'); // test only: A | C | E
 
   const { locationId, staffId } = sessionInfo();
   const globalUnlocked = Boolean(unlock && unlock.expiresAt > now);
@@ -323,7 +353,7 @@ function Extension() {
   }
 
   function startNew() {
-    setDraft({ scope: tab === 'global' ? 'global' : 'location', title: '', body: '', size: 'S', pinned: false, color: 'auto' });
+    setDraft({ scope: tab === 'global' ? 'global' : 'location', title: '', body: '', size: 'S', pinned: false, color: 'neutral' });
     setDraftError('');
     setPage('edit');
   }
@@ -505,7 +535,7 @@ function Extension() {
                 onInput={(e) => setDraft({ ...draft, body: e.currentTarget.value })}
               />
               <s-text type="small" color="subdued">
-                One item per line. An empty line adds space. Put a name in [brackets] to show it as a pill, e.g. [Chambly] 450 555 1234
+                One item per line. An empty line adds space. [Name] shows as a pill. "left | right" makes two aligned columns, e.g. [Chambly] | 450 555 1234
               </s-text>
               <s-stack direction="inline" gap="base" alignItems="center">
                 <s-text>Card size</s-text>
@@ -518,7 +548,7 @@ function Extension() {
               <s-stack direction="inline" gap="base" alignItems="center">
                 <s-text>Color</s-text>
                 {COLORS.map((c) => (
-                  <ChoiceButton key={c.value} selected={(draft.color || 'auto') === c.value} onClick={() => setDraft({ ...draft, color: c.value })}>{c.label}</ChoiceButton>
+                  <ChoiceButton key={c.value} selected={(draft.color || 'neutral') === c.value} onClick={() => setDraft({ ...draft, color: c.value })}>{c.label}</ChoiceButton>
                 ))}
               </s-stack>
               <s-text type="strong">Preview</s-text>
@@ -555,9 +585,9 @@ function Extension() {
                 <s-text color="subdued">This memo no longer exists.</s-text>
               ) : (
                 <s-stack direction="block" gap="base">
-                  {cardStyle === 'B' ? (
+                  {cardStyle === 'E' ? (
                     <s-stack direction="block" gap="base">
-                      <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${memo.title}`} />
+                      <TitlePill memo={memo} />
                       <MemoText text={memo.body} />
                     </s-stack>
                   ) : (
@@ -616,8 +646,8 @@ function Extension() {
             <s-stack direction="inline" gap="small" alignItems="center">
               <s-text color="subdued">Test only · card style:</s-text>
               <ChoiceButton selected={cardStyle === 'A'} onClick={() => setCardStyle('A')}>A Section</ChoiceButton>
-              <ChoiceButton selected={cardStyle === 'B'} onClick={() => setCardStyle('B')}>B Color</ChoiceButton>
               <ChoiceButton selected={cardStyle === 'C'} onClick={() => setCardStyle('C')}>C Line</ChoiceButton>
+              <ChoiceButton selected={cardStyle === 'E'} onClick={() => setCardStyle('E')}>E Pill</ChoiceButton>
             </s-stack>
             {noticeBanner}
             {loadState === 'loading' && <s-text color="subdued">Loading memos...</s-text>}

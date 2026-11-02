@@ -19,7 +19,7 @@ const MAX_TITLE = 80;
 const MAX_BODY = 4000;
 const MAX_PER_LIST = 200;
 const CACHE_MS = 20 * 1000;
-const COLORS = ["auto", "info", "success", "warning", "critical"];
+const COLORS = ["neutral", "info", "success", "caution", "warning", "critical", "auto"]; // "auto" = older memos (shown grey)
 
 const isNumericId = (v) => /^\d{1,20}$/.test(String(v ?? ""));
 const isMemoId = (v) => /^gid:\/\/shopify\/Metaobject\/\d{1,20}$/.test(String(v ?? ""));
@@ -29,7 +29,7 @@ const gid = (kind, id) => `gid://shopify/${kind}/${id}`;
 
 const DEFINITION_QUERY = `
   query MemoDefinition {
-    metaobjectDefinitionByType(type: "${TYPE}") { id fieldDefinitions { key } }
+    metaobjectDefinitionByType(type: "${TYPE}") { id fieldDefinitions { key validations { name value } } }
   }
 `;
 
@@ -123,7 +123,7 @@ const DEFINITION_INPUT = {
     { key: "body", name: "Text", type: "multi_line_text_field" },
     { key: "pinned", name: "Pinned", type: "boolean" },
     text("size", "Card size", { choices: ["S", "L"] }),
-    text("color", "Card color", { choices: ["auto", "info", "success", "warning", "critical"] }),
+    text("color", "Card color", { choices: ["neutral", "info", "success", "caution", "warning", "critical", "auto"] }),
     { key: "updated_at", name: "Updated at", type: "date_time" },
     text("updated_by", "Updated by (staff ID)"),
     text("rev", "Revision (changes at every save)"),
@@ -142,7 +142,7 @@ function fromNode(node) {
     body: f.body || "",
     pinned: f.pinned === "true",
     size: f.size === "L" ? "L" : "S",
-    color: COLORS.includes(f.color) ? f.color : "auto",
+    color: COLORS.includes(f.color) ? f.color : "neutral",
     updatedAt: f.updated_at || "",
     updatedBy: f.updated_by || "",
     rev: f.rev || "",
@@ -270,7 +270,7 @@ export function registerMemo(app, { graphql, requirePosAuth, rateLimit, safeEqua
     if (b.body !== undefined) fields.push({ key: "body", value: cleanBody(b.body) });
     if (b.pinned !== undefined) fields.push({ key: "pinned", value: b.pinned ? "true" : "false" });
     if (b.size !== undefined) fields.push({ key: "size", value: b.size === "L" ? "L" : "S" });
-    if (b.color !== undefined) fields.push({ key: "color", value: COLORS.includes(b.color) ? b.color : "auto" });
+    if (b.color !== undefined) fields.push({ key: "color", value: COLORS.includes(b.color) ? b.color : "neutral" });
     if (!fields.length) return badRequest(res, "Nothing to save");
     fields.push({ key: "updated_at", value: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") });
     fields.push({ key: "updated_by", value: String(b.staffId ?? req.posUser ?? "").slice(0, 40) });
@@ -379,6 +379,20 @@ export function registerMemo(app, { graphql, requirePosAuth, rateLimit, safeEqua
             definition: { fieldDefinitions: missing.map((f) => ({ create: f })) },
           }, "metaobjectDefinitionUpdate");
           console.log(`[memo] added metaobject fields: ${missing.map((f) => f.key).join(", ")}`);
+        }
+        // Choice lists changed after the first release (e.g. new card colors): update them.
+        const changed = DEFINITION_INPUT.fieldDefinitions.filter((f) => {
+          const want = f.validations?.find((v) => v.name === "choices")?.value;
+          const cur = def.fieldDefinitions.find((x) => x.key === f.key);
+          const now = cur?.validations?.find((v) => v.name === "choices")?.value;
+          return want && cur && JSON.stringify(JSON.parse(now || "[]")) !== JSON.stringify(JSON.parse(want));
+        });
+        if (changed.length) {
+          await gqlChecked(DEFINITION_UPDATE, {
+            id: def.id,
+            definition: { fieldDefinitions: changed.map((f) => ({ update: { key: f.key, validations: f.validations } })) },
+          }, "metaobjectDefinitionUpdate");
+          console.log(`[memo] updated choices of: ${changed.map((f) => f.key).join(", ")}`);
         }
       }
       console.log(`[memo] ready (Global editing ${UNLOCK_ENABLED ? "on" : "off"})`);

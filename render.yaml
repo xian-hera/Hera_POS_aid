@@ -67,6 +67,11 @@ services:
       # Receipt points: campaign multiplier for the estimate (optional, default 1)
       - key: POINTS_MULTIPLIER
         sync: false
+      # Unit number check (Shopify Flow → /api/address/check): Flow's header key (24+ characters) and the Canada Post AddressComplete key
+      - key: ADDRESS_CHECK_KEY
+        sync: false
+      - key: CANADAPOST_AC_KEY
+        sync: false
       # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
       - key: POS_AUTH_MODE
         sync: false
