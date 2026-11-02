@@ -5,12 +5,12 @@ export default async () => {
   render(<Extension />, document.body);
 }
 
-// Subheading "debug 1" while testing; final text: "Quick lookup of important info".
+// During tests the subheading shows "debug N"; final text: "Handy info".
 function Extension() {
   return (
     <s-tile
       heading="MEMO"
-      subheading="debug 5"
+      subheading="Handy info"
       onClick={() => shopify.action.presentModal()}
     />
   );

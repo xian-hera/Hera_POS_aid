@@ -38,7 +38,7 @@ Hera_POS_aid/
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/memo/list`, `/save`, `/delete`, `/unlock` | POS "MEMO" tile | Store memos and Global memos (metaobject `pos_memo`). Global changes need an unlock token (30 min) obtained with `MEMO_PASSWORD`. POS session token always required. |
 | `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Smile balance, estimates this sale's points and writes `custom.receipt_points_*` for the receipt. POS session token always required. |
-| `POST /api/address/check` | Shopify Flow ("Order created", online orders) | Checks the shipping address: when it has no unit number and Canada Post AddressComplete says the building has several units, answers `needsReview: true` (Flow then tags the order). Needs header `X-Address-Key`. |
+| `POST /api/unit/status`, `/api/unit/answer` | Thank you / Order status page block "unit-check" | Should the block ask for the unit number; save the customer's answer (unit → shipping address line 2, or "no unit"). Checkout session token + the order's confirmation number required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
@@ -67,8 +67,6 @@ once and then migrated automatically.
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
 | `MEMO_PASSWORD` | Password that unlocks editing of Global memos in the MEMO tile for 30 minutes on that iPad (6+ characters). Changing it locks every iPad again. Global editing is off when it is missing. |
 | `POINTS_MULTIPLIER` | Optional. Points campaign multiplier for the receipt estimate (e.g. `2`). Default `1`. |
-| `ADDRESS_CHECK_KEY` | 24+ random characters. Shopify Flow sends it in the `X-Address-Key` header of the unit number check. The check is disabled if it is missing. |
-| `CANADAPOST_AC_KEY` | Canada Post AddressComplete API key, used by the unit number check. |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
@@ -228,15 +226,38 @@ Campaigns: set `POINTS_MULTIPLIER`. `custom.points_balance` (Apple Wallet) is no
 
 ## Unit number check (online orders)
 
-Code: `address.js`. Shopify Flow calls `/api/address/check` for every new order that is not from POS:
+Code: `address.js` (orders, Thank you page answers), `nar.js` + `nar-normalize.js` (address lookup),
+extension `extensions/unit-check` (Thank you and Order status page block). Data: Statistics Canada
+National Address Register (NAR, free, Open Licence), as two files in `data/`.
 
+- **orders/paid** (orders not from POS, shipped to Canada): if the address has no unit number and
+  needs one, the order gets the tag `Check unit`.
 - **Unit given** (nothing to do): address line 2 is filled, or line 1 has `12-345 …`, `#12`, `apt/app/unit/suite/bureau/logement 12`…
-- Otherwise the address is looked up in Canada Post AddressComplete (Interactive Find). If the civic address is a
-  building with several units (a container such as "24 Addresses", or several `unit-345 …` results), the answer is
-  `{"needsReview": true, "status": "unit-missing"}` and Flow adds the tag (e.g. `Check unit`).
-- Other answers: `unit-given`, `single-unit`, `skipped` (no address / not Canada), `error` (AddressComplete
-  unavailable: the order is not tagged; see the Render log line `[address] …`).
-- Lookups are cached 7 days per address.
+- **Needs one**: NAR says the building has 2+ units, or NAR does not know the civic address (often a new
+  building), or several buildings share the postal code + civic number and the street does not say which.
+  A wrong postal code is caught by civic number + street name in the same province.
+- **Thank you page** (block "unit-check", second chance on the Order status page): the customer types the
+  unit (written to shipping address line 2, tag `Unit added by customer`) or confirms there is none
+  (tag `No unit (customer confirmed)`). Either way `Check unit` is removed. Answers are accepted for 14 days,
+  once, while the order is not fulfilled.
+- **"No unit" is remembered per customer email + address** (metaobject `unit_exemption`, Shopify admin →
+  Content → Metaobjects): that customer is not asked or tagged again for that address. Delete the entry to
+  ask again. Other customers at the same address are still checked.
+- Render log lines: `[unit] #1234: multi (24 units) · … → tagged "Check unit"`, `[unit] #1234: customer added unit "12"`.
+
+Block settings (checkout editor → Thank you page → the block): banner or card, colors, border, corners,
+padding, pill, button styles, and optional English / French texts (empty = built-in text in `locales/`).
+
+**Update the NAR data (every quarter, new release at
+https://www150.statcan.gc.ca/n1/pub/46-26-0002/462600022022001-eng.htm):**
+
+1. Download and unzip the new zip; only the `Addresses` folder is needed.
+2. `node tools/nar-refine.js "<…>\Addresses"` → `NAR_refined` (one small CSV per province)
+3. `node tools/nar-index.js "<…>\NAR_refined"` → `data/nar-all.bin.gz` and `data/nar-multi.tsv.gz`
+4. Commit `data/` and push; Render deploys.
+
+Testing tools: `node tools/nar-lookup.js "<NAR_refined>"` (type addresses one by one) and
+`node tools/nar-batch.js "<NAR_refined>" tools/nar-test-addresses.txt` (a list; that file is not committed).
 
 ## Deploy
 

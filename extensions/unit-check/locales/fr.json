@@ -1,0 +1,17 @@
+{
+  "name": "Vérification du numéro d'unité",
+  "pill": "Action requise",
+  "heading": "Votre numéro d'unité est-il manquant?",
+  "body": "Votre adresse de livraison semble correspondre à un immeuble à plusieurs unités (appartement, condo ou bureau). Sans numéro d'unité, Postes Canada pourrait ne pas pouvoir livrer votre commande, qui risque alors de nous être retournée.",
+  "unitLabel": "Numéro d'appartement, de bureau ou d'unité",
+  "save": "Enregistrer le numéro",
+  "noUnit": "Mon adresse n'a pas de numéro d'unité",
+  "confirmHeading": "Veuillez confirmer",
+  "disclaimer": "Je confirme que mon adresse de livraison n'a pas de numéro d'appartement, de bureau ou d'unité. Je comprends que Hera Beauté n'est pas responsable des retards, retours, pertes ou frais d'expédition supplémentaires résultant d'une adresse incomplète.",
+  "confirm": "Confirmer",
+  "back": "Retour",
+  "doneUnit": "Merci! L'unité {{unit}} a été ajoutée à votre adresse de livraison.",
+  "doneNone": "Merci, votre réponse a été enregistrée. Nous expédierons à l'adresse telle qu'inscrite.",
+  "invalidUnit": "Veuillez entrer un numéro d'unité (lettres et chiffres, 20 caractères maximum).",
+  "error": "Une erreur est survenue. Veuillez réessayer ou nous contacter si le problème persiste."
+}

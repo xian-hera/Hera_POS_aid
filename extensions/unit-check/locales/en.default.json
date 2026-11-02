@@ -1,0 +1,17 @@
+{
+  "name": "Unit number check",
+  "pill": "Action needed",
+  "heading": "Is your unit number missing?",
+  "body": "Your shipping address looks like a building with several units (apartment, condo or office). Without a unit number, Canada Post may not be able to deliver your order and it could be returned to us.",
+  "unitLabel": "Apartment, suite or unit number",
+  "save": "Save unit number",
+  "noUnit": "My address has no unit number",
+  "confirmHeading": "Please confirm",
+  "disclaimer": "I confirm that my shipping address has no apartment, suite or unit number. I understand that Hera Beauté is not responsible for delays, returns, losses or additional shipping costs resulting from an incomplete address.",
+  "confirm": "Confirm",
+  "back": "Back",
+  "doneUnit": "Thank you! Unit {{unit}} was added to your shipping address.",
+  "doneNone": "Thank you, your answer was saved. We will ship to the address as entered.",
+  "invalidUnit": "Please enter a unit number (letters and numbers, 20 characters max).",
+  "error": "Something went wrong. Please try again, or contact us if the problem continues."
+}

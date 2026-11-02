@@ -1,0 +1,173 @@
+api_version = "2026-07"
+
+[[extensions]]
+type = "ui_extension"
+# Merchant-facing name: see locales/en.default.json
+name = "t:name"
+handle = "unit-check"
+uid = "d0cb15d3-6c0b-2923-7ebd-ca373ed4b10b6a93e3d5"
+# `uid` is added automatically by `shopify app deploy` the first time
+description = "Thank you / Order status page: asks for the unit number when the building has several units (see address.js)"
+
+[[extensions.targeting]]
+module = "./src/ThankYou.jsx"
+target = "purchase.thank-you.block.render"
+
+[[extensions.targeting]]
+module = "./src/OrderStatus.jsx"
+target = "customer-account.order-status.block.render"
+
+[extensions.capabilities]
+# Calls the Hera_POS_aid backend (/api/unit/status, /api/unit/answer)
+network_access = true
+
+# Settings shown in the checkout editor when the block is selected (max 20). Empty = default (first choice).
+[extensions.settings]
+
+[[extensions.settings.fields]]
+key = "container"
+type = "single_line_text_field"
+name = "Style"
+description = "Banner = colored message box with an icon. Card = box with a border."
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"banner\", \"card\"]"
+
+[[extensions.settings.fields]]
+key = "banner_tone"
+type = "single_line_text_field"
+name = "Banner color"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"critical\", \"warning\", \"info\", \"success\"]"
+
+[[extensions.settings.fields]]
+key = "card_background"
+type = "single_line_text_field"
+name = "Card background"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"subdued\", \"base\", \"transparent\"]"
+
+[[extensions.settings.fields]]
+key = "card_border_width"
+type = "single_line_text_field"
+name = "Card border width"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"large-100\", \"large-200\", \"large\", \"base\", \"none\"]"
+
+[[extensions.settings.fields]]
+key = "card_border_style"
+type = "single_line_text_field"
+name = "Card border style"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"solid\", \"dashed\", \"dotted\"]"
+
+[[extensions.settings.fields]]
+key = "card_radius"
+type = "single_line_text_field"
+name = "Card corners"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"base\", \"large\", \"large-100\", \"small\", \"none\"]"
+
+[[extensions.settings.fields]]
+key = "card_padding"
+type = "single_line_text_field"
+name = "Card padding"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"large\", \"large-100\", \"large-200\", \"base\"]"
+
+[[extensions.settings.fields]]
+key = "title_tone"
+type = "single_line_text_field"
+name = "Card title color"
+description = "auto = normal heading"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"critical\", \"warning\", \"info\", \"success\", \"auto\"]"
+
+[[extensions.settings.fields]]
+key = "pill_tone"
+type = "single_line_text_field"
+name = "Pill color"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"critical\", \"neutral\", \"auto\"]"
+
+[[extensions.settings.fields]]
+key = "pill_color"
+type = "single_line_text_field"
+name = "Pill intensity"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"base\", \"subdued\"]"
+
+[[extensions.settings.fields]]
+key = "pill_size"
+type = "single_line_text_field"
+name = "Pill size"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"base\", \"small\"]"
+
+[[extensions.settings.fields]]
+key = "save_button"
+type = "single_line_text_field"
+name = "\"Save unit number\" button"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"primary\", \"secondary\"]"
+
+[[extensions.settings.fields]]
+key = "none_button"
+type = "single_line_text_field"
+name = "\"No unit number\" button"
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"secondary\", \"primary\"]"
+
+[[extensions.settings.fields]]
+key = "show_pill"
+type = "boolean"
+name = "Show the pill"
+description = "Default: shown"
+
+[[extensions.settings.fields]]
+key = "heading_en"
+type = "single_line_text_field"
+name = "Title (English)"
+description = "Empty = built-in text"
+
+[[extensions.settings.fields]]
+key = "heading_fr"
+type = "single_line_text_field"
+name = "Title (French)"
+description = "Empty = built-in text"
+
+[[extensions.settings.fields]]
+key = "body_en"
+type = "multi_line_text_field"
+name = "Text (English)"
+description = "Empty = built-in text"
+
+[[extensions.settings.fields]]
+key = "body_fr"
+type = "multi_line_text_field"
+name = "Text (French)"
+description = "Empty = built-in text"
+
+[[extensions.settings.fields]]
+key = "disclaimer_en"
+type = "multi_line_text_field"
+name = "\"No unit\" confirmation text (English)"
+description = "Empty = built-in text"
+
+[[extensions.settings.fields]]
+key = "disclaimer_fr"
+type = "multi_line_text_field"
+name = "\"No unit\" confirmation text (French)"
+description = "Empty = built-in text"

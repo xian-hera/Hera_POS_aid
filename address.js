@@ -1,28 +1,30 @@
-// Unit number check for online orders (Shopify Flow → /api/address/check)
+// Unit number check for online orders
 // ─────────────────────────────────────────────────────────────────────────────
-// Flow ("Order created", orders not from POS) sends the shipping address here. We answer whether
-// the order needs a human look, and Flow adds the order tag itself (so the app needs no extra
-// Shopify permission):
+// Finds Canadian orders shipped to a multi-unit building (apartments, condos, offices) without a unit
+// number, and lets the customer fix it on the Thank you / Order status page (extension "unit-check").
 //
-//   needsReview = true  when the address has no unit number AND Canada Post AddressComplete says the
-//                       civic address is a building with several units (apartments, condos, offices)
+// 1. orders/paid webhook (server.js → onOrderPaid), orders not from POS:
+//    the address needs a unit → tag "Check unit" (unless the customer already answered, or this
+//    customer confirmed earlier that this address has no unit).
+// 2. Thank you page → POST /api/unit/status: should the block ask for the unit number?
+// 3. Customer answers → POST /api/unit/answer:
+//      unit given  → written to the order's shipping address line 2, tag "Check unit" → "Unit added by customer"
+//      no unit     → tag "Check unit" → "No unit (customer confirmed)" and the customer + address is
+//                    remembered (metaobject unit_exemption), so the same customer is not asked again.
 //
-// A unit counts as given when address line 2 is not empty, or line 1 contains "12-345 …",
-// "#12", "apt / app / unit / suite / ste / bureau / logement / log 12" or similar.
-//
-// AddressComplete (Canada Post) Interactive Find: a multi-unit building comes back as a container
-// ("Next": "Find", description like "24 Addresses") or as a list of "12-345 Street" addresses.
-// Key: CANADAPOST_AC_KEY (Render). Results are cached 7 days per address to save lookups.
-// Flow authenticates with header X-Address-Key: ADDRESS_CHECK_KEY (Render, 24+ characters).
+// "Needs a unit" (nar.js, Statistics Canada National Address Register):
+//   multi      the building has 2+ units
+//   not-found  NAR does not know the civic address (often a new building)
+//   unsure     several buildings share postal code + civic number and the street does not tell which
+// A unit counts as given when address line 2 is not empty, or line 1 contains "12-345 …", "#12",
+// "apt / app / unit / suite / ste / bureau / logement / log 12" or similar.
 
-import fetch from "node-fetch";
-
-const FIND_URL = "https://ws1.postescanada-canadapost.ca/AddressComplete/Interactive/Find/v2.10/json3.ws";
-const CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+import crypto from "crypto";
+import { loadNar } from "./nar.js";
+import { normPostal, parseCivic } from "./nar-normalize.js";
 
 const UNIT_WORDS = /(^|[\s,])(#\s*\w+|(apt|apartment|app|appartement|unit|unité|unite|suite|ste|bureau|bur|logement|log|room|rm|porte|penthouse|ph)\.?\s*#?\s*\w*\d\w*)/i;
 const UNIT_DASH_CIVIC = /^\s*([a-z]?\d+[a-z]?|[a-z])\s*[-–]\s*\d+/i; // "12-345 Main St", "A-345 …", "12 - 345 …"
-const CIVIC = /^\s*(\d+)\s*([a-z](?![a-z]))?/i;                        // "345 Main", "345A Main"
 
 /** Does the address already carry a unit? */
 export function unitGiven(address1, address2) {
@@ -33,104 +35,318 @@ export function unitGiven(address1, address2) {
   return { given: false };
 }
 
-/** Civic number of line 1 ("345A Main St" → "345") */
-export function civicOf(address1) {
-  const m = String(address1 ?? "").match(CIVIC);
-  return m ? m[1] : "";
+export const TAG_CHECK = "Check unit";
+export const TAG_ADDED = "Unit added by customer";
+export const TAG_NONE = "No unit (customer confirmed)";
+const ANSWER_TAGS = [TAG_ADDED, TAG_NONE];
+const NEEDS_UNIT = new Set(["multi", "not-found", "unsure"]);
+const ANSWER_DAYS = 14; // the Order status page can still ask during this time
+const OPEN_FULFILLMENT = new Set(["UNFULFILLED", "OPEN", "ON_HOLD", "SCHEDULED", "PENDING_FULFILLMENT", "REQUEST_DECLINED"]);
+const EXEMPT_TYPE = "unit_exemption";
+const MAX_UNIT = 20;
+
+// ─── GraphQL ─────────────────────────────────────────────────────────────────
+
+const ORDER_QUERY = `
+  query UnitOrder($id: ID!) {
+    order(id: $id) {
+      id
+      name
+      email
+      createdAt
+      cancelledAt
+      confirmationNumber
+      sourceName
+      displayFulfillmentStatus
+      tags
+      shippingAddress { firstName lastName company address1 address2 city provinceCode countryCodeV2 zip phone }
+    }
+  }
+`;
+
+const ORDER_UPDATE = `
+  mutation UnitOrderUpdate($input: OrderInput!) {
+    orderUpdate(input: $input) { order { id } userErrors { field message } }
+  }
+`;
+
+const TAGS_ADD = `
+  mutation UnitTagsAdd($id: ID!, $tags: [String!]!) {
+    tagsAdd(id: $id, tags: $tags) { userErrors { field message } }
+  }
+`;
+
+const TAGS_REMOVE = `
+  mutation UnitTagsRemove($id: ID!, $tags: [String!]!) {
+    tagsRemove(id: $id, tags: $tags) { userErrors { field message } }
+  }
+`;
+
+const EXEMPT_DEFINITION_QUERY = `
+  query UnitExemptDefinition { metaobjectDefinitionByType(type: "${EXEMPT_TYPE}") { id } }
+`;
+
+const EXEMPT_DEFINITION_CREATE = `
+  mutation UnitExemptDefinitionCreate($definition: MetaobjectDefinitionCreateInput!) {
+    metaobjectDefinitionCreate(definition: $definition) { metaobjectDefinition { id } userErrors { field message code } }
+  }
+`;
+
+const EXEMPT_GET = `
+  query UnitExemptGet($handle: MetaobjectHandleInput!) { metaobjectByHandle(handle: $handle) { id } }
+`;
+
+const EXEMPT_UPSERT = `
+  mutation UnitExemptUpsert($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
+    metaobjectUpsert(handle: $handle, metaobject: $metaobject) { metaobject { id } userErrors { field message code } }
+  }
+`;
+
+const EXEMPT_DEFINITION = {
+  type: EXEMPT_TYPE,
+  name: "Unit number: customer confirmed none",
+  description: "A customer confirmed on the Thank you page that this address has no unit number. Written by Hera_POS_aid; delete an entry to ask this customer again.",
+  displayNameKey: "address",
+  fieldDefinitions: [
+    { key: "email", name: "Customer email", type: "single_line_text_field" },
+    { key: "address", name: "Address", type: "single_line_text_field" },
+    { key: "postal", name: "Postal code", type: "single_line_text_field" },
+    { key: "order", name: "Order", type: "single_line_text_field" },
+    { key: "confirmed_at", name: "Confirmed at", type: "date_time" },
+  ],
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const orderGid = (v) => {
+  const m = String(v ?? "").match(/(\d{1,20})$/); // gid://shopify/Order/123, gid://shopify/OrderIdentity/123 or 123
+  return m ? `gid://shopify/Order/${m[1]}` : null;
+};
+
+function cleanUnit(v) {
+  const s = String(v ?? "").replace(/\s+/g, " ").trim(); // kept as typed: "12", "Apt 12", "#12"
+  if (!s || s.length > MAX_UNIT || !/^[\p{L}\p{N}#][\p{L}\p{N} #\-\/.]*$/u.test(s) || !/\p{N}|^[\p{L}]{1,3}$/u.test(s)) return "";
+  return s;
 }
 
-const norm = (s) => String(s ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+// ─── Module ──────────────────────────────────────────────────────────────────
 
-/**
- * Reads AddressComplete Find results for one civic address.
- * multiUnit: a container for this civic number with several addresses, or 2+ unit addresses on it.
- */
-export function readFindItems(items, civic) {
-  const onCivic = (text) => new RegExp(`(^|[-–\\s])${civic}(?!\\d)`).test(String(text ?? ""));
-  let units = 0;
-  let container = null;
-  for (const it of items || []) {
-    if (!onCivic(it.Text)) continue;
-    const count = Number((String(it.Description ?? "").match(/(\d+)\s+(addresses|adresses)/i) || [])[1] || 0);
-    if (it.Next === "Find" && count >= 2 && new RegExp(`^\\s*${civic}(?!\\d)`).test(String(it.Text))) {
-      container = { id: it.Id, text: it.Text, count };
+export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutToken }) {
+  const nar = loadNar();
+
+  async function gqlChecked(query, variables, field) {
+    const data = await graphql(query, variables);
+    const errors = data?.[field]?.userErrors || [];
+    if (errors.length) throw new Error(`${field}: ${errors.map((e) => e.message).join("; ")}`);
+    return data[field];
+  }
+
+  // One change at a time per order (webhook and customer answer can arrive together).
+  const locks = new Map();
+  function withLock(id, fn) {
+    const run = (locks.get(id) || Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => {});
+    locks.set(id, tail);
+    tail.then(() => { if (locks.get(id) === tail) locks.delete(id); });
+    return run;
+  }
+
+  // ── "Customer confirmed: no unit" memory (customer email + postal code + civic number) ──
+  const exemptCache = new Map(); // handle → true/false
+  const exemptHandle = (email, a) => {
+    const key = [String(email || "").trim().toLowerCase(), normPostal(a.zip), parseCivic(a.address1)].join("|");
+    return `u-${crypto.createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+  };
+  async function isExempt(email, a) {
+    if (!email) return false;
+    const handle = exemptHandle(email, a);
+    if (exemptCache.has(handle)) return exemptCache.get(handle);
+    const data = await graphql(EXEMPT_GET, { handle: { type: EXEMPT_TYPE, handle } });
+    const found = Boolean(data?.metaobjectByHandle?.id);
+    exemptCache.set(handle, found);
+    if (exemptCache.size > 5000) exemptCache.delete(exemptCache.keys().next().value);
+    return found;
+  }
+  async function saveExempt(email, a, orderName) {
+    if (!email) return;
+    const handle = exemptHandle(email, a);
+    await gqlChecked(EXEMPT_UPSERT, {
+      handle: { type: EXEMPT_TYPE, handle },
+      metaobject: {
+        fields: [
+          { key: "email", value: String(email).trim().toLowerCase() },
+          { key: "address", value: `${a.address1}, ${a.city || ""} ${a.provinceCode || ""}`.trim() },
+          { key: "postal", value: normPostal(a.zip) },
+          { key: "order", value: orderName || "" },
+          { key: "confirmed_at", value: new Date().toISOString() },
+        ],
+      },
+    }, "metaobjectUpsert");
+    exemptCache.set(handle, true);
+  }
+
+  /** Does this shipping address need a unit number? a = { address1, address2, zip, provinceCode, countryCode } */
+  function evaluate(a) {
+    if (!a || !String(a.address1 ?? "").trim()) return { status: "skipped", reason: "no shipping address" };
+    const country = String(a.countryCode ?? "").toUpperCase();
+    if (country && country !== "CA") return { status: "skipped", reason: "not in Canada" };
+    const given = unitGiven(a.address1, a.address2);
+    if (given.given) return { status: "unit-given", how: given.how };
+    if (!nar) return { status: "error", reason: "NAR data missing" };
+    const r = nar.lookup({ address1: a.address1, zip: a.zip, province: a.provinceCode });
+    if (r.status === "no-civic") return { status: "skipped", reason: "no civic number" };
+    return { ...r, needsUnit: NEEDS_UNIT.has(r.status) };
+  }
+
+  const describe = (ev) => `${ev.status}${ev.units ? ` (${ev.units} units)` : ""}${ev.how ? ` · ${ev.how}` : ""}${ev.reason ? ` · ${ev.reason}` : ""}`;
+
+  async function fetchOrder(id) {
+    const data = await graphql(ORDER_QUERY, { id });
+    const o = data?.order;
+    if (!o) return null;
+    const s = o.shippingAddress || null;
+    return { ...o, address: s && { ...s, countryCode: s.countryCodeV2 } };
+  }
+
+  // ── 1. orders/paid webhook ──
+  async function onOrderPaid(payload) {
+    if (!nar || String(payload?.source_name || "") === "pos") return;
+    const s = payload?.shipping_address;
+    if (!s) return;
+    const id = payload.admin_graphql_api_id || orderGid(payload.id);
+    const name = payload.name || id;
+    const a = { address1: s.address1, address2: s.address2, city: s.city, zip: s.zip, provinceCode: s.province_code, countryCode: s.country_code };
+    const ev = evaluate(a);
+    if (!ev.needsUnit) {
+      if (ev.status !== "skipped" || ev.reason !== "not in Canada") console.log(`[unit] ${name}: ${describe(ev)}`);
+      return;
     }
-    if (it.Next === "Retrieve" && new RegExp(`^\\s*\\w+\\s*[-–]\\s*${civic}(?!\\d)`).test(String(it.Text))) units++;
-  }
-  if (container) return { multiUnit: true, units: container.count, container };
-  if (units >= 2) return { multiUnit: true, units };
-  return { multiUnit: false, units };
-}
-
-export function registerAddressCheck(app, { rateLimit, safeEqual }) {
-  const FLOW_KEY = process.env.ADDRESS_CHECK_KEY || "";
-  const AC_KEY = process.env.CANADAPOST_AC_KEY || "";
-  if (FLOW_KEY.length < 24) console.warn("[address] ADDRESS_CHECK_KEY is missing or shorter than 24 characters: /api/address/check is disabled");
-  if (!AC_KEY) console.warn("[address] CANADAPOST_AC_KEY is missing: unit checks are disabled");
-
-  const cache = new Map(); // normalized address → { at, value }
-
-  async function find(searchTerm, lastId) {
-    const url = new URL(FIND_URL);
-    url.searchParams.set("Key", AC_KEY);
-    url.searchParams.set("SearchTerm", searchTerm);
-    url.searchParams.set("Country", "CAN");
-    url.searchParams.set("LanguagePreference", "en");
-    url.searchParams.set("MaxSuggestions", "10");
-    if (lastId) url.searchParams.set("LastId", lastId);
-    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!resp.ok) throw new Error(`AddressComplete HTTP ${resp.status}`);
-    const data = await resp.json();
-    const items = Array.isArray(data) ? data : data.Items || [];
-    const err = items.find((i) => i.Error !== undefined);
-    if (err) throw new Error(`AddressComplete error ${err.Error}: ${err.Description || ""}`);
-    return items;
+    await withLock(id, async () => {
+      const email = payload.email || payload.contact_email || "";
+      if (await isExempt(email, a)) return console.log(`[unit] ${name}: ${describe(ev)} · customer confirmed no unit before → not tagged`);
+      const o = await fetchOrder(id);
+      if (!o) return;
+      if (o.tags.some((t) => ANSWER_TAGS.includes(t))) return console.log(`[unit] ${name}: customer already answered`);
+      if (!o.tags.includes(TAG_CHECK)) await gqlChecked(TAGS_ADD, { id, tags: [TAG_CHECK] }, "tagsAdd");
+      console.log(`[unit] ${name}: ${describe(ev)} → tagged "${TAG_CHECK}"`);
+    });
   }
 
-  async function multiUnitCheck({ address1, city, province, zip }) {
-    const civic = civicOf(address1);
-    if (!civic) return { multiUnit: false, note: "no civic number" };
-    const term = [address1, city, province, zip].map((s) => String(s ?? "").trim()).filter(Boolean).join(", ");
-    const key = norm(term);
-    const hit = cache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_MS) return { ...hit.value, cached: true };
-    const items = await find(term);
-    const value = { ...readFindItems(items, civic), civic };
-    if (value.container) delete value.container.id; // keep the answer small
-    cache.set(key, { at: Date.now(), value });
-    if (cache.size > 5000) cache.delete(cache.keys().next().value);
-    return value;
-  }
-
-  // Flow → "Send HTTP request" (POST, header X-Address-Key). Always answers 200 with JSON so Flow can
-  // read it; `status` says what happened, `needsReview` is what the workflow checks.
-  app.post("/api/address/check", rateLimit({ windowMs: 60 * 1000, max: 120 }), async (req, res) => {
-    if (FLOW_KEY.length < 24) return res.status(503).json({ error: "ADDRESS_CHECK_KEY is not configured" });
-    if (!safeEqual(String(req.headers["x-address-key"] || ""), FLOW_KEY)) {
-      console.warn(`[address] rejected: bad key from ${req.ip}`);
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    const b = req.body || {};
-    const order = String(b.order ?? "").slice(0, 40);
-    const country = String(b.countryCode ?? b.country ?? "").trim().toUpperCase();
-    const answer = (status, extra = {}) => {
-      const out = { needsReview: status === "unit-missing", status, ...extra };
-      console.log(`[address] ${order || "order ?"}: ${status}${extra.units ? ` (${extra.units} units)` : ""}${extra.how ? ` (${extra.how})` : ""}${extra.error ? ` – ${extra.error}` : ""}`);
-      return res.json(out);
-    };
-
-    if (!String(b.address1 ?? "").trim()) return answer("skipped", { reason: "no shipping address" });
-    if (country && !["CA", "CAN", "CANADA"].includes(country)) return answer("skipped", { reason: "not in Canada" });
-    const given = unitGiven(b.address1, b.address2);
-    if (given.given) return answer("unit-given", { how: given.how });
-    if (!AC_KEY) return answer("error", { error: "CANADAPOST_AC_KEY is not configured" });
-
+  // ── Thank you / Order status page: the request must come from our checkout extension and name
+  // the order by its id AND its confirmation number (which only the buyer sees).
+  function auth(req, res) {
+    const header = String(req.headers.authorization || "");
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
     try {
-      const r = await multiUnitCheck({ address1: b.address1, city: b.city, province: b.province, zip: b.zip });
-      if (r.multiUnit) return answer("unit-missing", { units: r.units || undefined, building: r.container?.text });
-      return answer("single-unit", { note: r.note });
+      if (!token) throw new Error("no token");
+      verifyCheckoutToken(token);
+      return true;
     } catch (err) {
-      return answer("error", { error: err.message.slice(0, 200) });
+      console.warn(`[unit] request refused: ${err.message}`);
+      res.status(401).json({ error: "Unauthorized" });
+      return false;
+    }
+  }
+
+  async function orderFor(req, res) {
+    const id = orderGid(req.body?.orderId);
+    const number = String(req.body?.number ?? "").trim();
+    if (!id || !number) { res.status(400).json({ error: "orderId and number are required" }); return null; }
+    const o = await fetchOrder(id);
+    if (!o) { res.json({ pending: true }); return null; } // Thank you page: the order is still being created
+    if (!o.confirmationNumber || o.confirmationNumber !== number) {
+      console.warn(`[unit] ${o.name}: confirmation number does not match`);
+      res.status(404).json({ error: "Order not found" });
+      return null;
+    }
+    return o;
+  }
+
+  function canAnswer(o) {
+    if (o.cancelledAt) return "cancelled";
+    if (!OPEN_FULFILLMENT.has(o.displayFulfillmentStatus)) return "already fulfilled";
+    if (Date.now() - new Date(o.createdAt).getTime() > ANSWER_DAYS * 86400000) return "too old";
+    if (o.tags.some((t) => ANSWER_TAGS.includes(t))) return "already answered";
+    return "";
+  }
+
+  const limiter = rateLimit({ windowMs: 60 * 1000, max: 30 });
+
+  // ── 2. Should the block ask? ──
+  app.post("/api/unit/status", limiter, async (req, res) => {
+    if (!auth(req, res)) return;
+    try {
+      const o = await orderFor(req, res);
+      if (!o) return;
+      const answered = o.tags.includes(TAG_ADDED) ? "unit" : o.tags.includes(TAG_NONE) ? "none" : "";
+      if (answered) return res.json({ show: false, answered });
+      if (canAnswer(o)) return res.json({ show: false });
+      const ev = evaluate(o.address);
+      const exempt = ev.needsUnit && await isExempt(o.email, o.address);
+      res.json({ show: Boolean(ev.needsUnit && !exempt) });
+    } catch (err) {
+      console.error("[unit] status error:", err.message);
+      res.status(500).json({ error: "Please try again" });
     }
   });
+
+  // ── 3. The customer's answer ──
+  app.post("/api/unit/answer", limiter, async (req, res) => {
+    if (!auth(req, res)) return;
+    const choice = req.body?.choice;
+    const unit = cleanUnit(req.body?.unit);
+    if (choice !== "unit" && choice !== "none") return res.status(400).json({ error: "Invalid choice" });
+    if (choice === "unit" && !unit) return res.status(400).json({ error: "invalid-unit" });
+    try {
+      const pre = await orderFor(req, res);
+      if (!pre) return;
+      await withLock(pre.id, async () => {
+        const o = await fetchOrder(pre.id); // fresh tags and address inside the lock
+        const why = canAnswer(o);
+        if (why) return res.status(409).json({ error: why });
+        const ev = evaluate(o.address);
+        if (!ev.needsUnit) return res.status(409).json({ error: "not needed" });
+
+        if (choice === "unit") {
+          const s = o.address;
+          await gqlChecked(ORDER_UPDATE, {
+            input: {
+              id: o.id,
+              shippingAddress: {
+                firstName: s.firstName, lastName: s.lastName, company: s.company,
+                address1: s.address1, address2: unit, city: s.city,
+                provinceCode: s.provinceCode, countryCode: s.countryCodeV2, zip: s.zip, phone: s.phone,
+              },
+            },
+          }, "orderUpdate");
+          await gqlChecked(TAGS_ADD, { id: o.id, tags: [TAG_ADDED] }, "tagsAdd");
+        } else {
+          await saveExempt(o.email, o.address, o.name);
+          await gqlChecked(TAGS_ADD, { id: o.id, tags: [TAG_NONE] }, "tagsAdd");
+        }
+        if (o.tags.includes(TAG_CHECK)) await gqlChecked(TAGS_REMOVE, { id: o.id, tags: [TAG_CHECK] }, "tagsRemove");
+        console.log(`[unit] ${o.name}: customer ${choice === "unit" ? `added unit "${unit}"` : "confirmed no unit"}`);
+        res.json({ ok: true });
+      });
+    } catch (err) {
+      console.error("[unit] answer error:", err.message);
+      if (!res.headersSent) res.status(500).json({ error: "Please try again" });
+    }
+  });
+
+  // ── Start-up: create the "customer confirmed" metaobject definition if missing ──
+  (async () => {
+    try {
+      const data = await graphql(EXEMPT_DEFINITION_QUERY, {});
+      if (!data.metaobjectDefinitionByType) {
+        await gqlChecked(EXEMPT_DEFINITION_CREATE, { definition: EXEMPT_DEFINITION }, "metaobjectDefinitionCreate");
+        console.log(`[unit] created metaobject definition ${EXEMPT_TYPE}`);
+      }
+      console.log(`[unit] ready${nar ? "" : " (NAR data missing: checks are off)"}`);
+    } catch (err) {
+      console.error("[unit] setup failed:", err.message);
+    }
+  })();
+
+  return { onOrderPaid };
 }

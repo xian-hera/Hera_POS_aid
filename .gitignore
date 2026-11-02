@@ -24,3 +24,6 @@ certs/
 
 # Generated gift card code lists (contain redeem codes: never commit)
 giftcards-output/
+
+# Customer addresses used to test the NAR lookup (never commit)
+tools/nar-test-addresses.txt

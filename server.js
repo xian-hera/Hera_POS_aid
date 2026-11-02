@@ -7,6 +7,7 @@
 // - Gift card balance: storefront page /apps/hera/giftcard-balance and POS /api/giftcard/balance
 // - Restock Notify: POS tile + daily stock check called by Shopify Flow (see restock.js)
 // - Restock report for head office: /report, password-protected (see report.js)
+// - Unit number check for online orders: orders/paid tag + Thank you page block "unit-check" (see address.js)
 
 import express from "express";
 import crypto from "crypto";
@@ -364,9 +365,21 @@ function sendPassUpdatePush(pushToken) {
 }
 
 // ─── deviceId → customerId (used when Apple asks which passes changed) ───────
-// Filled at registration AND right before every push, so a server restart or
-// Render sleep no longer breaks updates: the push itself re-creates the entry.
+// Filled at registration AND right before every push, so a server restart no
+// longer breaks updates: the push itself re-creates the entry.
 const deviceToCustomer = new Map();
+
+// ─── CORS for the Thank you / Order status page block (address.js) ───────────
+// Checkout UI extensions run on origins that may change without notice: Shopify requires
+// "Access-Control-Allow-Origin: *". These routes are protected by the checkout session token.
+
+app.use("/api/unit", (req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 
 // ─── CORS (only the POS extension origins need it) ────────────────────────────
 
@@ -432,6 +445,26 @@ function verifyShopifyIdToken(token) {
   const destHost = hostOf(payload.dest);
   if (!destHost || destHost !== SHOP_DOMAIN) throw new Error(`wrong shop ${destHost}`);
   if (hostOf(payload.iss) !== destHost) throw new Error("iss/dest mismatch");
+  return payload;
+}
+
+// Checkout / Thank you page extensions send a session token signed with the app secret too.
+// Its claims differ from the POS token (no "iss"), so only signature, time, app and shop are checked.
+function verifyCheckoutToken(token) {
+  const parts = String(token).split(".");
+  if (parts.length !== 3) throw new Error("malformed token");
+  const [h, p, s] = parts;
+  const header = JSON.parse(Buffer.from(h, "base64url").toString("utf8"));
+  if (header.alg !== "HS256") throw new Error("unexpected alg");
+  const expected = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(`${h}.${p}`).digest("base64url");
+  if (!safeEqual(expected, s)) throw new Error("bad signature");
+  const payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8"));
+  const now = nowSeconds();
+  if (typeof payload.exp !== "number" || payload.exp < now - 10) throw new Error("expired");
+  if (typeof payload.nbf === "number" && payload.nbf > now + 10) throw new Error("not yet valid");
+  if (payload.aud !== SHOPIFY_API_KEY) throw new Error("wrong audience");
+  const dest = hostOf(payload.dest) || String(payload.dest || "");
+  if (dest !== SHOP_DOMAIN) throw new Error(`wrong shop ${dest}`);
   return payload;
 }
 
@@ -623,10 +656,14 @@ registerPoints(app, {
   giftProductId: GIFT_PRODUCT_ID,
 });
 
-// ─── Shopify Flow: unit number check for online orders (address.js) ──────────
-// Flow sends the shipping address; the answer says whether the order needs a human look (Flow adds the tag).
+// ─── Unit number check for online orders (address.js) ────────────────────────
+// orders/paid tags orders that need a unit number; the Thank you page block "unit-check" asks the customer.
 
-registerAddressCheck(app, { rateLimit, safeEqual });
+const unitCheck = registerAddressCheck(app, {
+  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 15000, attempts: 2 }),
+  rateLimit,
+  verifyCheckoutToken,
+});
 
 // Head-office report of restock requests: /report (password: REPORT_PASSWORD). See report.js.
 registerReport(app, {
@@ -1024,6 +1061,9 @@ app.post("/webhooks/orders", async (req, res) => {
     giftCards.activateFromOrder(order).catch((err) => console.error("[giftcard] activation error:", err.message));
   }
 
+  // Unit number check (online orders shipped to Canada; POS orders are skipped inside).
+  unitCheck.onOrderPaid(order).catch((err) => console.error("[unit] order check error:", err.message));
+
   if (!shopifyCustomerId) return;
 
   syncSmilePoints(shopifyCustomerId).catch((err) => console.error("Smile sync error:", err.message));
@@ -1076,7 +1116,7 @@ async function syncSmilePoints(customerId) {
 
 // ─── OAuth (only used when (re)installing the app) ────────────────────────────
 
-const SCOPES = ["read_customers,write_customers,read_orders,write_app_proxy,read_gift_cards,write_gift_cards", ...RESTOCK_SCOPES].join(",");
+const SCOPES = ["read_customers,write_customers,read_orders,write_orders,write_app_proxy,read_gift_cards,write_gift_cards", ...RESTOCK_SCOPES].join(",");
 
 app.get("/auth", (req, res) => {
   const { shop } = req.query;
