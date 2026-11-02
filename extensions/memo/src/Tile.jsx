@@ -10,7 +10,7 @@ function Extension() {
   return (
     <s-tile
       heading="MEMO"
-      subheading="debug 1"
+      subheading="debug 2"
       onClick={() => shopify.action.presentModal()}
     />
   );

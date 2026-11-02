@@ -19,6 +19,7 @@ const MAX_TITLE = 80;
 const MAX_BODY = 4000;
 const MAX_PER_LIST = 200;
 const CACHE_MS = 20 * 1000;
+const COLORS = ["auto", "info", "success", "warning", "critical"];
 
 const isNumericId = (v) => /^\d{1,20}$/.test(String(v ?? ""));
 const isMemoId = (v) => /^gid:\/\/shopify\/Metaobject\/\d{1,20}$/.test(String(v ?? ""));
@@ -122,6 +123,7 @@ const DEFINITION_INPUT = {
     { key: "body", name: "Text", type: "multi_line_text_field" },
     { key: "pinned", name: "Pinned", type: "boolean" },
     text("size", "Card size", { choices: ["S", "L"] }),
+    text("color", "Card color", { choices: ["auto", "info", "success", "warning", "critical"] }),
     { key: "updated_at", name: "Updated at", type: "date_time" },
     text("updated_by", "Updated by (staff ID)"),
     text("rev", "Revision (changes at every save)"),
@@ -140,6 +142,7 @@ function fromNode(node) {
     body: f.body || "",
     pinned: f.pinned === "true",
     size: f.size === "L" ? "L" : "S",
+    color: COLORS.includes(f.color) ? f.color : "auto",
     updatedAt: f.updated_at || "",
     updatedBy: f.updated_by || "",
     rev: f.rev || "",
@@ -267,6 +270,7 @@ export function registerMemo(app, { graphql, requirePosAuth, rateLimit, safeEqua
     if (b.body !== undefined) fields.push({ key: "body", value: cleanBody(b.body) });
     if (b.pinned !== undefined) fields.push({ key: "pinned", value: b.pinned ? "true" : "false" });
     if (b.size !== undefined) fields.push({ key: "size", value: b.size === "L" ? "L" : "S" });
+    if (b.color !== undefined) fields.push({ key: "color", value: COLORS.includes(b.color) ? b.color : "auto" });
     if (!fields.length) return badRequest(res, "Nothing to save");
     fields.push({ key: "updated_at", value: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") });
     fields.push({ key: "updated_by", value: String(b.staffId ?? req.posUser ?? "").slice(0, 40) });

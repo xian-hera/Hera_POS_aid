@@ -161,22 +161,52 @@ function sortMemos(list) {
   return [...list].sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || a.title.localeCompare(b.title));
 }
 
-function MemoCard({ memo, tier, onOpen }) {
+// Card colors (Banner tones; used by card style B). "auto" = neutral grey.
+const COLORS = [
+  { value: 'auto', label: 'Grey' },
+  { value: 'info', label: 'Blue' },
+  { value: 'success', label: 'Green' },
+  { value: 'warning', label: 'Yellow' },
+  { value: 'critical', label: 'Red' },
+];
+const toneOf = (memo) => (COLORS.some((c) => c.value === memo.color) ? memo.color : 'auto');
+
+// debug 2: three card styles to compare on the iPad (POS boxes have no background or border).
+//   A = Section with the title as its heading   B = Banner (colored)   C = plain text + divider line
+function MemoCard({ memo, tier, onOpen, style }) {
   const wide = memo.size === 'L';
+  const title = clip(memo.title, wide ? 64 : 28);
+  const body = <MemoText text={memo.body} maxLines={tier.lines} maxChars={wide ? 60 : 26} />;
+  const saving = memo.saving && <s-text type="small" color="subdued">Saving...</s-text>;
+  let card;
+  if (style === 'A') {
+    card = (
+      <s-section heading={`${memo.pinned ? '● ' : ''}${title}`}>
+        <s-stack direction="block" gap="small-200">{body}{saving}</s-stack>
+      </s-section>
+    );
+  } else if (style === 'B') {
+    card = (
+      <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${title}`}>
+        <s-stack direction="block" gap="small-200">{body}{saving}</s-stack>
+      </s-banner>
+    );
+  } else {
+    card = (
+      <s-stack direction="block" gap="small-200">
+        <s-stack direction="inline" gap="small-200" alignItems="center">
+          {memo.pinned && <s-text tone="critical">●</s-text>}
+          <s-text type="strong">{title}</s-text>
+        </s-stack>
+        {body}
+        {saving}
+        <s-divider />
+      </s-stack>
+    );
+  }
   return (
     <s-box inlineSize={wide ? '39%' : '19%'} minBlockSize={tier.height}>
-      <s-clickable onClick={onOpen}>
-        <s-section>
-          <s-stack direction="block" gap="small-200">
-            <s-stack direction="inline" gap="small-200" alignItems="center">
-              {memo.pinned && <s-text tone="critical">●</s-text>}
-              <s-text type="strong">{clip(memo.title, wide ? 64 : 28)}</s-text>
-            </s-stack>
-            <MemoText text={memo.body} maxLines={tier.lines} maxChars={wide ? 60 : 26} />
-            {memo.saving && <s-text type="small" color="subdued">Saving...</s-text>}
-          </s-stack>
-        </s-section>
-      </s-clickable>
+      <s-clickable onClick={onOpen}>{card}</s-clickable>
     </s-box>
   );
 }
@@ -216,6 +246,7 @@ function Extension() {
   const [password, setPassword] = useState('');
   const [unlockBusy, setUnlockBusy] = useState(false);
   const [unlockError, setUnlockError] = useState('');
+  const [cardStyle, setCardStyle] = useState('B'); // debug 2 only: A | B | C
 
   const { locationId, staffId } = sessionInfo();
   const globalUnlocked = Boolean(unlock && unlock.expiresAt > now);
@@ -277,13 +308,13 @@ function Extension() {
   }
 
   function startNew() {
-    setDraft({ scope: tab === 'global' ? 'global' : 'location', title: '', body: '', size: 'S', pinned: false });
+    setDraft({ scope: tab === 'global' ? 'global' : 'location', title: '', body: '', size: 'S', pinned: false, color: 'auto' });
     setDraftError('');
     setPage('edit');
   }
 
   function startEdit(memo) {
-    setDraft({ id: memo.id, scope: memo.scope, title: memo.title, body: memo.body, size: memo.size, pinned: memo.pinned, baseRev: memo.rev });
+    setDraft({ id: memo.id, scope: memo.scope, title: memo.title, body: memo.body, size: memo.size, pinned: memo.pinned, color: toneOf(memo), baseRev: memo.rev });
     setDraftError('');
     setPage('edit');
   }
@@ -300,11 +331,11 @@ function Extension() {
     const title = d.title.trim();
     if (!title) { setDraftError('Please enter a title.'); return; }
     if (!canEditScope(d.scope)) { setDraftError('Global is locked: go back, tap the lock and enter the password.'); return; }
-    const payload = { locationId, staffId, unlockToken, title, body: d.body, size: d.size, pinned: d.pinned };
+    const payload = { locationId, staffId, unlockToken, title, body: d.body, size: d.size, pinned: d.pinned, color: d.color };
 
     if (d.id) {
       const before = findMemo(d.id);
-      putMemo({ ...before, title, body: d.body, size: d.size, pinned: d.pinned, saving: true });
+      putMemo({ ...before, title, body: d.body, size: d.size, pinned: d.pinned, color: d.color, saving: true });
       setOpenId(d.id);
       setConfirmDelete(false);
       setPage('detail');
@@ -321,7 +352,7 @@ function Extension() {
     }
 
     const tempId = `new-${Date.now()}`;
-    putMemo({ id: tempId, scope: d.scope, locationId, title, body: d.body, size: d.size, pinned: d.pinned, updatedAt: '', saving: true });
+    putMemo({ id: tempId, scope: d.scope, locationId, title, body: d.body, size: d.size, pinned: d.pinned, color: d.color, updatedAt: '', saving: true });
     setTab(d.scope === 'global' ? 'global' : 'local');
     setPage('list');
     api('save', { ...payload, scope: d.scope })
@@ -469,12 +500,19 @@ function Extension() {
                 <ChoiceButton selected={!draft.pinned} onClick={() => setDraft({ ...draft, pinned: false })}>No</ChoiceButton>
                 <ChoiceButton selected={draft.pinned} onClick={() => setDraft({ ...draft, pinned: true })}>Yes</ChoiceButton>
               </s-stack>
-              <s-section heading="Preview">
-                <s-stack direction="block" gap="small-200">
-                  <s-text type="strong">{draft.title || 'Title'}</s-text>
-                  <MemoText text={draft.body} />
-                </s-stack>
-              </s-section>
+              <s-stack direction="inline" gap="base" alignItems="center">
+                <s-text>Color</s-text>
+                {COLORS.map((c) => (
+                  <ChoiceButton key={c.value} selected={(draft.color || 'auto') === c.value} onClick={() => setDraft({ ...draft, color: c.value })}>{c.label}</ChoiceButton>
+                ))}
+              </s-stack>
+              <s-text type="strong">Preview</s-text>
+              <MemoCard
+                memo={{ id: 'preview', title: draft.title || 'Title', body: draft.body, size: draft.size, pinned: draft.pinned, color: draft.color }}
+                tier={{ height: '0px', lines: 0 }}
+                style={cardStyle}
+                onOpen={() => {}}
+              />
             </s-stack>
           </s-box>
         </s-scroll-box>
@@ -502,15 +540,15 @@ function Extension() {
                 <s-text color="subdued">This memo no longer exists.</s-text>
               ) : (
                 <s-stack direction="block" gap="base">
-                  <s-section>
-                    <s-stack direction="block" gap="base">
-                      <s-stack direction="inline" gap="small-200" alignItems="center">
-                        {memo.pinned && <s-text tone="critical">●</s-text>}
-                        <s-heading>{memo.title}</s-heading>
-                      </s-stack>
+                  {cardStyle === 'B' ? (
+                    <s-banner tone={toneOf(memo)} heading={`${memo.pinned ? '● ' : ''}${memo.title}`}>
                       <MemoText text={memo.body} />
-                    </s-stack>
-                  </s-section>
+                    </s-banner>
+                  ) : (
+                    <s-section heading={`${memo.pinned ? '● ' : ''}${memo.title}`}>
+                      <MemoText text={memo.body} />
+                    </s-section>
+                  )}
                   <s-text type="small" color="subdued">
                     {memo.saving ? 'Saving...' : `Updated ${fmtDate(memo.updatedAt)}`} · {memo.size === 'L' ? 'Large' : 'Small'} card
                   </s-text>
@@ -559,6 +597,12 @@ function Extension() {
                 <s-button variant="primary" disabled={!tabEditable || loadState !== 'ready'} onClick={startNew}>Add</s-button>
               </s-stack>
             </s-stack>
+            <s-stack direction="inline" gap="small" alignItems="center">
+              <s-text color="subdued">Test only · card style:</s-text>
+              <ChoiceButton selected={cardStyle === 'A'} onClick={() => setCardStyle('A')}>A Section</ChoiceButton>
+              <ChoiceButton selected={cardStyle === 'B'} onClick={() => setCardStyle('B')}>B Color</ChoiceButton>
+              <ChoiceButton selected={cardStyle === 'C'} onClick={() => setCardStyle('C')}>C Line</ChoiceButton>
+            </s-stack>
             {noticeBanner}
             {loadState === 'loading' && <s-text color="subdued">Loading memos...</s-text>}
             {loadState === 'error' && (
@@ -576,7 +620,7 @@ function Extension() {
             )}
             {loadState === 'ready' && memos.length > 0 && (
               <s-stack direction="inline" gap="small">
-                {memos.map((m) => <MemoCard key={m.id} memo={m} tier={tier} onOpen={() => openMemo(m)} />)}
+                {memos.map((m) => <MemoCard key={m.id} memo={m} tier={tier} style={cardStyle} onOpen={() => openMemo(m)} />)}
               </s-stack>
             )}
           </s-stack>
