@@ -108,9 +108,9 @@ for (const f of files) {
       }
     }
   }
-  process.stdout.write(`  read ${prov}.csv\r`);
+  process.stdout.write(`  read ${prov}.csv`.padEnd(30) + "\r");
 }
-console.log(`Read ${files.length} province files in ${((Date.now() - t0) / 1000).toFixed(0)} s\n`);
+console.log(" ".repeat(30) + "\r" + `Read ${files.length} province files in ${((Date.now() - t0) / 1000).toFixed(0)} s\n`);
 
 // ── Results ──
 const fmt = (r) => `${r.civic}${r.suffix} ${[r.street, r.type, r.dir].filter(Boolean).join(" ")}, ${r.city} ${r.postal} (${r.prov}) · units ${r.units} of ${r.addresses} · ${USE[r.use] || r.use}`;

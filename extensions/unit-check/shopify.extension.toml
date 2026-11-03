@@ -22,8 +22,17 @@ target = "customer-account.order-status.block.render"
 network_access = true
 
 # Style settings shown in the checkout editor (empty = default = first choice).
-# Fixed: critical banner, pill neutral / base with the alert icon. Texts live in the metaobject "Unit No. Alert texts".
+# Fixed: critical banner, pill neutral / base. Texts live in the metaobject "Unit No. Alert texts".
 [extensions.settings]
+
+[[extensions.settings.fields]]
+key = "title_layout"
+type = "single_line_text_field"
+name = "Title layout"
+description = "banner = the banner's own title, pill below it with an icon. inline = pill and title on the same line (pill without icon)."
+[[extensions.settings.fields.validations]]
+name = "choices"
+value = "[\"banner\", \"inline\"]"
 
 [[extensions.settings.fields]]
 key = "show_pill"

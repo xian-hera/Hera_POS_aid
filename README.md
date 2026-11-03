@@ -245,8 +245,14 @@ National Address Register (NAR, free, Open Licence), as two files in `data/`.
   ask again. Other customers at the same address are still checked.
 - Render log lines: `[unit] #1234: multi (24 units) · … → tagged "Check unit"`, `[unit] #1234: customer added unit "12"`.
 
-Block settings (checkout editor → Thank you page → the block): banner or card, colors, border, corners,
-padding, pill, button styles, and optional English / French texts (empty = built-in text in `locales/`).
+Block look (checkout editor → Thank you page / Order status page → block "Unit No. Alert"): always a red
+(critical) banner with a grey pill and alert icon. Settings: show the pill, button width (fit / fill), style and
+color of the Save / Confirm buttons, style and color of the No unit number / Back buttons, text color.
+
+Block texts (English + French): metaobject **Unit No. Alert texts**, entry `default` (Shopify admin → Content →
+Metaobjects). Created automatically with the built-in texts on the first start; an empty field uses the built-in
+text in `extensions/unit-check/locales/`. Changes show within a minute. In the checkout editor, an "Edit texts"
+link under the block preview opens the entry (customers never see it).
 
 **Update the NAR data (about twice a year, usually June and December):**
 
