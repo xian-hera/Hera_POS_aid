@@ -6,7 +6,8 @@
 // 1. orders/paid webhook (server.js → onOrderPaid), orders not from POS:
 //    the address needs a unit → tag "Check unit" (unless the customer already answered, or this
 //    customer confirmed earlier that this address has no unit).
-// 2. Thank you page → POST /api/unit/status: should the block ask for the unit number?
+// 2. Thank you page → POST /api/unit/quick (the shipping address, no need to wait for the order) or
+//    Order status page → POST /api/unit/status (the order): should the block ask for the unit number?
 // Texts of the block: metaobject "Unit No. Alert texts" (Content → Metaobjects), English + French.
 // 3. Customer answers → POST /api/unit/answer:
 //      unit given  → written to the order's shipping address line 2, tag "Check unit" → "Unit added by customer"
@@ -344,12 +345,23 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
     }
   }
 
-  async function orderFor(req, res) {
+  // waitMs: keep asking Shopify while the order is still being created (the customer's answer can come
+  // from the Thank you page before the order exists); 0 = answer { pending: true } at once.
+  async function orderFor(req, res, { waitMs = 0 } = {}) {
     const id = orderGid(req.body?.orderId);
     const number = String(req.body?.number ?? "").trim();
     if (!id || !number) { res.status(400).json({ error: "orderId and number are required" }); return null; }
-    const o = await fetchOrder(id);
-    if (!o) { res.json({ pending: true }); return null; } // Thank you page: the order is still being created
+    let o = await fetchOrder(id);
+    const until = Date.now() + waitMs;
+    while (!o && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 1500));
+      o = await fetchOrder(id);
+    }
+    if (!o) {
+      if (waitMs) res.status(503).json({ error: "pending" });
+      else res.json({ pending: true }); // Thank you page: the order is still being created
+      return null;
+    }
     if (!o.confirmationNumber || o.confirmationNumber !== number) {
       console.warn(`[unit] ${o.name}: confirmation number does not match`);
       res.status(404).json({ error: "Order not found" });
@@ -387,6 +399,27 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
     }
   });
 
+  // ── 2b. Thank you page, fast path: the block sends the shipping address it already has, so the
+  // answer does not wait for the order to be created. Only says yes / no for that address.
+  app.post("/api/unit/quick", limiter, async (req, res) => {
+    if (!auth(req, res)) return;
+    try {
+      const b = req.body?.address || {};
+      const str = (v) => String(v ?? "").slice(0, 200);
+      const a = {
+        address1: str(b.address1), address2: str(b.address2), city: str(b.city), zip: str(b.zip),
+        provinceCode: str(b.provinceCode), countryCode: str(b.countryCode),
+      };
+      const ev = evaluate(a);
+      const exempt = ev.needsUnit && await isExempt(str(req.body?.email), a);
+      const show = Boolean(ev.needsUnit && !exempt);
+      res.json({ show, ...(show ? { text: await blockTexts() } : {}) });
+    } catch (err) {
+      console.error("[unit] quick check error:", err.message);
+      res.status(500).json({ error: "Please try again" });
+    }
+  });
+
   // ── Checkout editor preview: only the texts (there is no real order there) ──
   app.post("/api/unit/texts", limiter, async (req, res) => {
     if (!auth(req, res)) return;
@@ -402,7 +435,7 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
     if (choice !== "unit" && choice !== "none") return res.status(400).json({ error: "Invalid choice" });
     if (choice === "unit" && !unit) return res.status(400).json({ error: "invalid-unit" });
     try {
-      const pre = await orderFor(req, res);
+      const pre = await orderFor(req, res, { waitMs: 15000 });
       if (!pre) return;
       await withLock(pre.id, async () => {
         const o = await fetchOrder(pre.id); // fresh tags and address inside the lock

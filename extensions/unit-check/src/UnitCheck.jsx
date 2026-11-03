@@ -51,10 +51,15 @@ function readSettings() {
   };
 }
 
+// Remembered on this device once the customer has answered, so a reload doesn't ask again.
+const answeredKey = (orderId) => `unit-answered:${String(orderId || '').split('/').pop()}`;
+
 // <s-paragraph> props for the body color setting.
 const bodyProps = (tone) => (tone === 'base' ? {} : tone === 'subdued' ? { color: 'subdued' } : { tone });
 
-export function UnitCheck({ orderId, number }) {
+// address / email: given by the Thank you page (fast path, no need to wait for the order).
+// The Order status page gives none: the server reads the order instead.
+export function UnitCheck({ orderId, number, address, email }) {
   // In the checkout editor the order is a sample: always show the question (no order check),
   // so the block and its settings can be previewed. The buttons only change the preview.
   const inEditor = Boolean(shopify.extension?.editor);
@@ -83,6 +88,20 @@ export function UnitCheck({ orderId, number }) {
     let stopped = false;
     let tries = 0;
     let timer = null;
+    const start = async () => {
+      // Already answered on this device (e.g. the page was reloaded): stay hidden.
+      try { if (await shopify.storage.read(answeredKey(orderId))) { if (!stopped) setPhase('hidden'); return; } } catch { /* no storage */ }
+      if (address?.address1) {
+        try {
+          const r = await post('quick', { address, email: email || '' });
+          if (stopped) return;
+          if (r.text) setTexts(r.text);
+          setPhase(r.show ? 'ask' : 'hidden');
+          return;
+        } catch { /* fall back to the order check below */ }
+      }
+      ask();
+    };
     const ask = async () => {
       tries += 1;
       try {
@@ -97,7 +116,7 @@ export function UnitCheck({ orderId, number }) {
         setPhase('hidden'); // never block the page: the order keeps its "Check unit" tag for staff
       }
     };
-    ask();
+    start();
     return () => { stopped = true; if (timer) clearTimeout(timer); };
   }, [orderId, number]);
 
@@ -113,8 +132,14 @@ export function UnitCheck({ orderId, number }) {
     setBusy(true);
     try {
       await post('answer', { orderId, number, choice, unit: choice === 'unit' ? unit : '' });
+      try { await shopify.storage.write(answeredKey(orderId), choice); } catch { /* no storage */ }
       if (choice === 'unit') { setSavedUnit(unit.trim()); setPhase('done-unit'); } else setPhase('done-none');
     } catch (err) {
+      if (err.code === 'already answered') { // answered before (another tab / device): nothing more to do
+        try { await shopify.storage.write(answeredKey(orderId), 'yes'); } catch { /* no storage */ }
+        setPhase('hidden');
+        return;
+      }
       setError(err.code === 'invalid-unit' ? t('invalid_unit') : t('error'));
     } finally {
       setBusy(false);
