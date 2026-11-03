@@ -5,7 +5,7 @@ export default async () => {
   render(<Extension />, document.body);
 }
 
-// During tests the subheading shows "debug N"; final text: "Handy info".
+// Subheading: "Handy info". Change it only when asked.
 function Extension() {
   return (
     <s-tile

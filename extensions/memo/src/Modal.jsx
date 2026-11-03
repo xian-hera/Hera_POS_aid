@@ -145,44 +145,47 @@ function LineParts({ text, maxChars }) {
   );
 }
 
-// "left | right" = two columns: every left column has the same width, so the right ones line up.
+// "left | right" = two columns.
+// Detail page (no maxChars): left column 20% of the width, right column 80%, nothing clipped.
+// Card (maxChars): one line per row, never wrapped, empty lines left out. The left column is just
+// wide enough for its longest text; the right column takes the rest and is clipped with "…".
+// Both columns are boxes with a width: text that is not in a box takes a full row and wraps (debug 9).
+const CARD_LINE_CHARS = 30;  // characters that fit on one card line (estimate, landscape iPad)
+
 function MemoText({ text, maxLines, maxChars }) {
-  const lines = String(text || '').split('\n');
   if (!text) return null;
+  const card = Boolean(maxChars);
+  const lines = String(text).split('\n').filter((l) => !card || l.trim());
   const more = maxLines && lines.length > maxLines;
   const shown = maxLines ? lines.slice(0, more ? maxLines - 1 : maxLines) : lines; // "…" takes the last line
-  // Detail page (no maxChars): left column 20%, nothing clipped.
-  // Card (maxChars): the left column is as wide as its longest text, so it never wraps; the right
-  // column gets the rest and is clipped with "…".
-  let leftWidth = '20%';
-  let rightWidth = '80%';
+
+  let leftPct = 20;
   let rightChars;
-  if (maxChars) {
+  if (card) {
     const lefts = shown.filter((l) => l.includes('|')).map((l) => l.slice(0, l.indexOf('|')).replace(/[[\]]/g, '').trim().length);
     const longest = lefts.length ? Math.max(...lefts) : 0;
-    const pct = Math.min(60, Math.max(15, Math.round(((longest * 1.1 + 2) / maxChars) * 100))); // +10%: bold text is wider
-    leftWidth = `${pct}%`;
-    rightWidth = `${100 - pct}%`;
-    rightChars = Math.max(4, Math.floor(maxChars * (100 - pct) / 100) - 1);
+    leftPct = Math.min(60, Math.max(15, Math.ceil(((longest * 1.1 + 1) / CARD_LINE_CHARS) * 100))); // bold is ~10% wider
+    rightChars = Math.max(4, Math.floor((CARD_LINE_CHARS * (98 - leftPct)) / 100) - 3);
   }
-  return (
-    <s-stack direction="block" gap="small-100">
-      {shown.map((line, i) => {
-        if (!line.trim()) return <s-box key={i} paddingBlock="small-200" />;
-        const bar = line.indexOf('|');
-        if (bar >= 0) {
-          return (
-            <s-stack key={i} direction="inline" gap="none" alignItems="center">
-              <s-box inlineSize={leftWidth}><LineParts text={line.slice(0, bar)} /></s-box>
-              <s-box inlineSize={rightWidth}><LineParts text={line.slice(bar + 1)} maxChars={rightChars} /></s-box>
-            </s-stack>
-          );
-        }
-        return <s-box key={i}><LineParts text={line} maxChars={maxChars} /></s-box>;
-      })}
-      {more && <s-text color="subdued">…</s-text>}
-    </s-stack>
-  );
+  const rightPct = 98 - leftPct; // 2% spare so the two boxes never overflow the row
+
+  // Every row has a string key, the "…" row too: without keys POS put the "…" in the wrong place.
+  const rows = shown.map((line, i) => {
+    const key = `l${i}`;
+    if (!line.trim()) return <s-box key={key} paddingBlock="small-200" />;
+    const bar = line.indexOf('|');
+    if (bar >= 0) {
+      return (
+        <s-stack key={key} direction="inline" gap="none" alignItems="center">
+          <s-box inlineSize={`${leftPct}%`}><LineParts text={line.slice(0, bar)} /></s-box>
+          <s-box inlineSize={`${rightPct}%`}><LineParts text={line.slice(bar + 1)} maxChars={rightChars} /></s-box>
+        </s-stack>
+      );
+    }
+    return <s-box key={key}><LineParts text={line} maxChars={maxChars} /></s-box>;
+  });
+  if (more) rows.push(<s-box key="more"><s-text color="subdued">…</s-text></s-box>);
+  return <s-stack direction="block" gap="small-100">{rows}</s-stack>;
 }
 
 // ─── Cards ───────────────────────────────────────────────────────────────────

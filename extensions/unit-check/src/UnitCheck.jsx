@@ -9,6 +9,14 @@ const SERVER_URL = 'https://search-0wf4.onrender.com';
 const POLL_MS = 2000;
 const POLL_TRIES = 15;
 
+// Texts come from the metaobject "Unit No. Alert texts" (server, keys like "no_unit");
+// an empty field falls back to locales/*.json (keys like "noUnit").
+const LOCALE_KEY = {
+  pill: 'pill', heading: 'heading', body: 'body', unit_label: 'unitLabel', save: 'save', no_unit: 'noUnit',
+  confirm_heading: 'confirmHeading', disclaimer: 'disclaimer', confirm: 'confirm', back: 'back',
+  done_unit: 'doneUnit', done_none: 'doneNone', invalid_unit: 'invalidUnit', error: 'error',
+};
+
 async function post(path, body) {
   const token = await shopify.sessionToken.get();
   const resp = await fetch(`${SERVER_URL}/api/unit/${path}`, {
@@ -26,46 +34,50 @@ async function post(path, body) {
   return data;
 }
 
-// Settings from the checkout editor (empty = first choice in shopify.extension.toml).
+// Style settings from the checkout editor (empty = default). The rest of the look is fixed:
+// critical banner, pill neutral / base with the alert icon.
 function readSettings() {
   const s = shopify.settings.value || {};
   const pick = (v, d) => (v === undefined || v === null || v === '' ? d : v);
   return {
-    container: pick(s.container, 'banner'),
-    bannerTone: pick(s.banner_tone, 'critical'),
-    cardBackground: pick(s.card_background, 'subdued'),
-    cardBorderWidth: pick(s.card_border_width, 'large-100'),
-    cardBorderStyle: pick(s.card_border_style, 'solid'),
-    cardRadius: pick(s.card_radius, 'base'),
-    cardPadding: pick(s.card_padding, 'large'),
-    titleTone: pick(s.title_tone, 'critical'),
     showPill: s.show_pill !== false,
-    pillTone: pick(s.pill_tone, 'critical'),
-    pillColor: pick(s.pill_color, 'base'),
-    pillSize: pick(s.pill_size, 'base'),
-    saveButton: pick(s.save_button, 'primary'),
-    noneButton: pick(s.none_button, 'secondary'),
-    raw: s,
+    fill: pick(s.button_width, 'fit') === 'fill',
+    primaryVariant: pick(s.primary_variant, 'primary'),
+    primaryTone: pick(s.primary_tone, 'auto'),
+    secondaryVariant: pick(s.secondary_variant, 'secondary'),
+    secondaryTone: pick(s.secondary_tone, 'auto'),
+    bodyTone: pick(s.body_tone, 'base'),
   };
 }
 
+// <s-paragraph> props for the body color setting.
+const bodyProps = (tone) => (tone === 'base' ? {} : tone === 'subdued' ? { color: 'subdued' } : { tone });
+
 export function UnitCheck({ orderId, number }) {
-  // In the checkout editor the order is a sample: always show the question (no server calls),
+  // In the checkout editor the order is a sample: always show the question (no order check),
   // so the block and its settings can be previewed. The buttons only change the preview.
   const inEditor = Boolean(shopify.extension?.editor);
   const [phase, setPhase] = useState(inEditor ? 'ask' : 'loading'); // loading | hidden | ask | confirm | done-unit | done-none
+  const [texts, setTexts] = useState(null);   // { en: {...}, fr: {...} } from the metaobject
+  const [editUrl, setEditUrl] = useState(''); // editor only: link to the texts metaobject
   const [unit, setUnit] = useState('');
   const [savedUnit, setSavedUnit] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   const cfg = readSettings();
-  const fr = String(shopify.localization?.language?.value?.isoCode || '').toLowerCase().startsWith('fr');
-  const t = (key, vars) => shopify.i18n.translate(key, vars);
-  const text = (key) => String(cfg.raw[`${key}_${fr ? 'fr' : 'en'}`] || '').trim() || t(key);
+  const lang = String(shopify.localization?.language?.value?.isoCode || '').toLowerCase().startsWith('fr') ? 'fr' : 'en';
+  const t = (key, vars) => {
+    const own = texts?.[lang]?.[key];
+    if (own) return vars ? own.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? '') : own;
+    return shopify.i18n.translate(LOCALE_KEY[key], vars);
+  };
 
   useEffect(() => {
-    if (inEditor) return undefined;
+    if (inEditor) {
+      post('texts', {}).then((r) => { setTexts(r.text || null); setEditUrl(r.editUrl || ''); }).catch(() => {});
+      return undefined;
+    }
     if (!orderId || !number) { setPhase('hidden'); return undefined; }
     let stopped = false;
     let tries = 0;
@@ -76,9 +88,8 @@ export function UnitCheck({ orderId, number }) {
         const r = await post('status', { orderId, number });
         if (stopped) return;
         if (r.pending && tries < POLL_TRIES) { timer = setTimeout(ask, POLL_MS); return; }
-        if (r.show) setPhase('ask');
-        else if (r.answered === 'unit') setPhase('hidden');
-        else setPhase('hidden');
+        if (r.text) setTexts(r.text);
+        setPhase(r.show ? 'ask' : 'hidden');
       } catch {
         if (stopped) return;
         if (tries < 3) { timer = setTimeout(ask, POLL_MS); return; }
@@ -91,7 +102,7 @@ export function UnitCheck({ orderId, number }) {
 
   async function answer(choice) {
     setError('');
-    if (choice === 'unit' && !unit.trim()) { setError(t('invalidUnit')); return; }
+    if (choice === 'unit' && !unit.trim()) { setError(t('invalid_unit')); return; }
     if (inEditor) { // preview only: show the result screen, then come back to the question
       if (choice === 'unit') setSavedUnit(unit.trim());
       setPhase(choice === 'unit' ? 'done-unit' : 'done-none');
@@ -103,7 +114,7 @@ export function UnitCheck({ orderId, number }) {
       await post('answer', { orderId, number, choice, unit: choice === 'unit' ? unit : '' });
       if (choice === 'unit') { setSavedUnit(unit.trim()); setPhase('done-unit'); } else setPhase('done-none');
     } catch (err) {
-      setError(err.code === 'invalid-unit' ? t('invalidUnit') : t('error'));
+      setError(err.code === 'invalid-unit' ? t('invalid_unit') : t('error'));
     } finally {
       setBusy(false);
     }
@@ -111,73 +122,80 @@ export function UnitCheck({ orderId, number }) {
 
   if (phase === 'loading' || phase === 'hidden') return null;
 
+  // Editor only (customers never see it): where to change the texts.
+  const editLink = inEditor && (
+    <s-text type="small" color="subdued">
+      Texts: Shopify admin → Content → Metaobjects → Unit No. Alert texts.{' '}
+      {editUrl && <s-link href={editUrl} target="_blank">Edit texts</s-link>}
+    </s-text>
+  );
+
   if (phase === 'done-unit' || phase === 'done-none') {
     return (
-      <s-banner tone="success">
-        <s-text>{phase === 'done-unit' ? t('doneUnit', { unit: savedUnit }) : t('doneNone')}</s-text>
-      </s-banner>
+      <s-stack direction="block" gap="small">
+        <s-banner tone="success">
+          <s-text>{phase === 'done-unit' ? t('done_unit', { unit: savedUnit }) : t('done_none')}</s-text>
+        </s-banner>
+        {editLink}
+      </s-stack>
     );
   }
 
-  const heading = phase === 'confirm' ? t('confirmHeading') : text('heading');
+  const button = (group, label, onClick, isBusy) => (
+    <s-button
+      variant={group === 'primary' ? cfg.primaryVariant : cfg.secondaryVariant}
+      tone={group === 'primary' ? cfg.primaryTone : cfg.secondaryTone}
+      inlineSize={cfg.fill ? 'fill' : 'auto'}
+      loading={group === 'primary' && isBusy}
+      disabled={group !== 'primary' && isBusy}
+      onClick={onClick}
+    >
+      {label}
+    </s-button>
+  );
+  const buttons = (a, b) => (
+    <s-stack direction={cfg.fill ? 'block' : 'inline'} gap="base">{a}{b}</s-stack>
+  );
 
   const content = phase === 'confirm' ? (
     <s-stack direction="block" gap="base">
-      <s-paragraph>{text('disclaimer')}</s-paragraph>
+      <s-paragraph {...bodyProps(cfg.bodyTone)}>{t('disclaimer')}</s-paragraph>
       {error && <s-text tone="critical">{error}</s-text>}
-      <s-stack direction="inline" gap="base">
-        <s-button variant="primary" loading={busy} onClick={() => answer('none')}>{t('confirm')}</s-button>
-        <s-button variant="secondary" disabled={busy} onClick={() => { setError(''); setPhase('ask'); }}>{t('back')}</s-button>
-      </s-stack>
+      {buttons(
+        button('primary', t('confirm'), () => answer('none'), busy),
+        button('secondary', t('back'), () => { setError(''); setPhase('ask'); }, busy),
+      )}
     </s-stack>
   ) : (
     <s-stack direction="block" gap="base">
-      <s-paragraph>{text('body')}</s-paragraph>
+      <s-paragraph {...bodyProps(cfg.bodyTone)}>{t('body')}</s-paragraph>
       <s-text-field
-        label={t('unitLabel')}
+        label={t('unit_label')}
         value={unit}
         maxLength={20}
         error={error || undefined}
         onInput={(e) => setUnit(e.currentTarget.value)}
       />
-      <s-stack direction="inline" gap="base">
-        <s-button variant={cfg.saveButton} loading={busy} onClick={() => answer('unit')}>{t('save')}</s-button>
-        <s-button variant={cfg.noneButton} disabled={busy} onClick={() => { setError(''); setPhase('confirm'); }}>{t('noUnit')}</s-button>
-      </s-stack>
+      {buttons(
+        button('primary', t('save'), () => answer('unit'), busy),
+        button('secondary', t('no_unit'), () => { setError(''); setPhase('confirm'); }, busy),
+      )}
     </s-stack>
   );
-
-  const pill = cfg.showPill && (
-    <s-stack direction="inline">
-      <s-badge tone={cfg.pillTone} color={cfg.pillColor} size={cfg.pillSize}>{t('pill')}</s-badge>
-    </s-stack>
-  );
-
-  if (cfg.container === 'card') {
-    return (
-      <s-box
-        padding={cfg.cardPadding}
-        background={cfg.cardBackground}
-        border={`${cfg.cardBorderWidth} base ${cfg.cardBorderStyle}`}
-        borderRadius={cfg.cardRadius}
-      >
-        <s-stack direction="block" gap="base">
-          {pill}
-          {cfg.titleTone === 'auto'
-            ? <s-heading>{heading}</s-heading>
-            : <s-text type="strong" tone={cfg.titleTone}>{heading}</s-text>}
-          {content}
-        </s-stack>
-      </s-box>
-    );
-  }
 
   return (
-    <s-banner tone={cfg.bannerTone} heading={heading}>
-      <s-stack direction="block" gap="base">
-        {pill}
-        {content}
-      </s-stack>
-    </s-banner>
+    <s-stack direction="block" gap="small">
+      <s-banner tone="critical" heading={phase === 'confirm' ? t('confirm_heading') : t('heading')}>
+        <s-stack direction="block" gap="base">
+          {cfg.showPill && (
+            <s-stack direction="inline">
+              <s-badge tone="neutral" color="base" icon="alert-circle">{t('pill')}</s-badge>
+            </s-stack>
+          )}
+          {content}
+        </s-stack>
+      </s-banner>
+      {editLink}
+    </s-stack>
   );
 }

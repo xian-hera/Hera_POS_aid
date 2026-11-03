@@ -7,6 +7,7 @@
 //    the address needs a unit → tag "Check unit" (unless the customer already answered, or this
 //    customer confirmed earlier that this address has no unit).
 // 2. Thank you page → POST /api/unit/status: should the block ask for the unit number?
+// Texts of the block: metaobject "Unit No. Alert texts" (Content → Metaobjects), English + French.
 // 3. Customer answers → POST /api/unit/answer:
 //      unit given  → written to the order's shipping address line 2, tag "Check unit" → "Unit added by customer"
 //      no unit     → tag "Check unit" → "No unit (customer confirmed)" and the customer + address is
@@ -44,6 +45,57 @@ const ANSWER_DAYS = 14; // the Order status page can still ask during this time
 const OPEN_FULFILLMENT = new Set(["UNFULFILLED", "OPEN", "ON_HOLD", "SCHEDULED", "PENDING_FULFILLMENT", "REQUEST_DECLINED"]);
 const EXEMPT_TYPE = "unit_exemption";
 const MAX_UNIT = 20;
+
+// Texts of the Thank you page block: one metaobject "unit_alert_text" (handle "default"), edited in
+// Shopify admin → Content → Metaobjects. An empty field = the built-in text of the extension (locales/).
+const TEXT_TYPE = "unit_alert_text";
+const TEXT_HANDLE = "default";
+const TEXT_CACHE_MS = 60 * 1000;
+const TEXT_KEYS = [
+  ["pill", "Pill"],
+  ["heading", "Title"],
+  ["body", "Text", true],
+  ["unit_label", "Unit number field (label)"],
+  ["save", "Button: save unit number"],
+  ["no_unit", "Button: my address has no unit number"],
+  ["confirm_heading", "Confirmation step: title"],
+  ["disclaimer", "Confirmation step: text (disclaimer)", true],
+  ["confirm", "Confirmation step: confirm button"],
+  ["back", "Confirmation step: back button"],
+  ["done_unit", "Done: unit saved ({{unit}} = the unit typed)", true],
+  ["done_none", "Done: no unit confirmed", true],
+  ["invalid_unit", "Error: invalid unit number"],
+  ["error", "Error: something went wrong", true],
+];
+const TEXT_DEFAULTS = {
+  pill_en: "Action needed", pill_fr: "Action requise",
+  heading_en: "Is your unit number missing?", heading_fr: "Votre numéro d'unité est-il manquant?",
+  body_en: "Your shipping address looks like a building with several units (apartment, condo or office). Without a unit number, Canada Post may not be able to deliver your order and it could be returned to us.",
+  body_fr: "Votre adresse de livraison semble correspondre à un immeuble à plusieurs unités (appartement, condo ou bureau). Sans numéro d'unité, Postes Canada pourrait ne pas pouvoir livrer votre commande, qui risque alors de nous être retournée.",
+  unit_label_en: "Apartment, suite or unit number", unit_label_fr: "Numéro d'appartement, de bureau ou d'unité",
+  save_en: "Save unit number", save_fr: "Enregistrer le numéro",
+  no_unit_en: "My address has no unit number", no_unit_fr: "Mon adresse n'a pas de numéro d'unité",
+  confirm_heading_en: "Please confirm", confirm_heading_fr: "Veuillez confirmer",
+  disclaimer_en: "I confirm that my shipping address has no apartment, suite or unit number. I understand that Hera Beauté is not responsible for delays, returns, losses or additional shipping costs resulting from an incomplete address.",
+  disclaimer_fr: "Je confirme que mon adresse de livraison n'a pas de numéro d'appartement, de bureau ou d'unité. Je comprends que Hera Beauté n'est pas responsable des retards, retours, pertes ou frais d'expédition supplémentaires résultant d'une adresse incomplète.",
+  confirm_en: "Confirm", confirm_fr: "Confirmer",
+  back_en: "Back", back_fr: "Retour",
+  done_unit_en: "Thank you! Unit {{unit}} was added to your shipping address.", done_unit_fr: "Merci! L'unité {{unit}} a été ajoutée à votre adresse de livraison.",
+  done_none_en: "Thank you, your answer was saved. We will ship to the address as entered.", done_none_fr: "Merci, votre réponse a été enregistrée. Nous expédierons à l'adresse telle qu'inscrite.",
+  invalid_unit_en: "Please enter a unit number (letters and numbers, 20 characters max).", invalid_unit_fr: "Veuillez entrer un numéro d'unité (lettres et chiffres, 20 caractères maximum).",
+  error_en: "Something went wrong. Please try again, or contact us if the problem continues.", error_fr: "Une erreur est survenue. Veuillez réessayer ou nous contacter si le problème persiste.",
+};
+const TEXT_DEFINITION = {
+  type: TEXT_TYPE,
+  name: "Unit No. Alert texts",
+  description: "Texts of the Thank you / Order status page block \"Unit No. Alert\" (Hera_POS_aid). Edit the entry \"default\". An empty field uses the built-in text. Changes show within a minute.",
+  displayNameKey: "heading_en",
+  fieldDefinitions: TEXT_KEYS.flatMap(([key, name, multi]) => ["en", "fr"].map((lang) => ({
+    key: `${key}_${lang}`,
+    name: `${name} (${lang === "en" ? "English" : "French"})`,
+    type: multi ? "multi_line_text_field" : "single_line_text_field",
+  }))),
+};
 
 // ─── GraphQL ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +146,20 @@ const EXEMPT_DEFINITION_CREATE = `
 
 const EXEMPT_GET = `
   query UnitExemptGet($handle: MetaobjectHandleInput!) { metaobjectByHandle(handle: $handle) { id } }
+`;
+
+const TEXT_DEFINITION_QUERY = `
+  query UnitTextDefinition { metaobjectDefinitionByType(type: "${TEXT_TYPE}") { id fieldDefinitions { key } } }
+`;
+
+const TEXT_GET = `
+  query UnitTextGet($handle: MetaobjectHandleInput!) { metaobjectByHandle(handle: $handle) { id fields { key value } } }
+`;
+
+const DEFINITION_UPDATE = `
+  mutation UnitDefinitionUpdate($id: ID!, $definition: MetaobjectDefinitionUpdateInput!) {
+    metaobjectDefinitionUpdate(id: $id, definition: $definition) { metaobjectDefinition { id } userErrors { field message code } }
+  }
 `;
 
 const EXEMPT_UPSERT = `
@@ -183,6 +249,36 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
       },
     }, "metaobjectUpsert");
     exemptCache.set(handle, true);
+  }
+
+  // ── Block texts (metaobject unit_alert_text / default), cached one minute ──
+  let textCache = { at: 0, value: null };
+  let textEntryId = "";
+  // Shopify admin page of the texts entry (shown under the block preview in the checkout editor).
+  const textEditUrl = () => {
+    const store = String(process.env.SHOP_DOMAIN || "").replace(/\.myshopify\.com$/, "");
+    if (!store) return "";
+    return textEntryId
+      ? `https://admin.shopify.com/store/${store}/content/metaobjects/entries/${TEXT_TYPE}/${textEntryId}`
+      : `https://admin.shopify.com/store/${store}/content/metaobjects/entries/${TEXT_TYPE}`;
+  };
+  async function blockTexts() {
+    if (textCache.value && Date.now() - textCache.at < TEXT_CACHE_MS) return textCache.value;
+    try {
+      const data = await graphql(TEXT_GET, { handle: { type: TEXT_TYPE, handle: TEXT_HANDLE } });
+      const fields = data?.metaobjectByHandle?.fields || [];
+      textEntryId = String(data?.metaobjectByHandle?.id || "").split("/").pop();
+      const value = { en: {}, fr: {} };
+      for (const f of fields) {
+        const m = f.key.match(/^(.*)_(en|fr)$/);
+        if (m && String(f.value || "").trim()) value[m[2]][m[1]] = String(f.value).trim();
+      }
+      textCache = { at: Date.now(), value };
+    } catch (err) {
+      console.warn("[unit] could not read the block texts:", err.message);
+      if (!textCache.value) return { en: {}, fr: {} };
+    }
+    return textCache.value;
   }
 
   /** Does this shipping address need a unit number? a = { address1, address2, zip, provinceCode, countryCode } */
@@ -283,11 +379,19 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
       if (canAnswer(o)) return res.json({ show: false });
       const ev = evaluate(o.address);
       const exempt = ev.needsUnit && await isExempt(o.email, o.address);
-      res.json({ show: Boolean(ev.needsUnit && !exempt) });
+      const show = Boolean(ev.needsUnit && !exempt);
+      res.json({ show, ...(show ? { text: await blockTexts() } : {}) });
     } catch (err) {
       console.error("[unit] status error:", err.message);
       res.status(500).json({ error: "Please try again" });
     }
+  });
+
+  // ── Checkout editor preview: only the texts (there is no real order there) ──
+  app.post("/api/unit/texts", limiter, async (req, res) => {
+    if (!auth(req, res)) return;
+    const text = await blockTexts();
+    res.json({ text, editUrl: textEditUrl() });
   });
 
   // ── 3. The customer's answer ──
@@ -334,6 +438,31 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
     }
   });
 
+  // Texts definition + the "default" entry, filled with the built-in texts the first time.
+  async function setupTexts() {
+    const data = await graphql(TEXT_DEFINITION_QUERY, {});
+    const def = data.metaobjectDefinitionByType;
+    if (!def) {
+      await gqlChecked(EXEMPT_DEFINITION_CREATE, { definition: TEXT_DEFINITION }, "metaobjectDefinitionCreate");
+      console.log(`[unit] created metaobject definition ${TEXT_TYPE}`);
+    } else {
+      const have = new Set(def.fieldDefinitions.map((f) => f.key));
+      const missing = TEXT_DEFINITION.fieldDefinitions.filter((f) => !have.has(f.key));
+      if (missing.length) {
+        await gqlChecked(DEFINITION_UPDATE, { id: def.id, definition: { fieldDefinitions: missing.map((f) => ({ create: f })) } }, "metaobjectDefinitionUpdate");
+        console.log(`[unit] added text fields: ${missing.map((f) => f.key).join(", ")}`);
+      }
+    }
+    const entry = await graphql(TEXT_GET, { handle: { type: TEXT_TYPE, handle: TEXT_HANDLE } });
+    if (!entry?.metaobjectByHandle) {
+      await gqlChecked(EXEMPT_UPSERT, {
+        handle: { type: TEXT_TYPE, handle: TEXT_HANDLE },
+        metaobject: { fields: Object.entries(TEXT_DEFAULTS).map(([key, value]) => ({ key, value })) },
+      }, "metaobjectUpsert");
+      console.log(`[unit] created the texts entry ${TEXT_TYPE}/${TEXT_HANDLE} (edit it in Content → Metaobjects)`);
+    }
+  }
+
   // ── Start-up: create the "customer confirmed" metaobject definition if missing ──
   (async () => {
     try {
@@ -342,6 +471,7 @@ export function registerAddressCheck(app, { graphql, rateLimit, verifyCheckoutTo
         await gqlChecked(EXEMPT_DEFINITION_CREATE, { definition: EXEMPT_DEFINITION }, "metaobjectDefinitionCreate");
         console.log(`[unit] created metaobject definition ${EXEMPT_TYPE}`);
       }
+      await setupTexts();
       console.log(`[unit] ready${nar ? "" : " (NAR data missing: checks are off)"}`);
     } catch (err) {
       console.error("[unit] setup failed:", err.message);
