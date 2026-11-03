@@ -35,7 +35,7 @@ async function post(path, body) {
 }
 
 // Style settings from the checkout editor (empty = default). The rest of the look is fixed:
-// critical banner, pill neutral / base with the alert icon.
+// critical banner, pill neutral / base on the same line as the title.
 function readSettings() {
   const s = shopify.settings.value || {};
   const pick = (v, d) => (v === undefined || v === null || v === '' ? d : v);
@@ -185,13 +185,14 @@ export function UnitCheck({ orderId, number }) {
 
   return (
     <s-stack direction="block" gap="small">
-      <s-banner tone="critical" heading={phase === 'confirm' ? t('confirm_heading') : t('heading')}>
+      {/* The banner's own heading only takes plain text, so the pill + title row is drawn inside the
+          banner instead (the banner keeps its own alert icon, so the pill has none). */}
+      <s-banner tone="critical">
         <s-stack direction="block" gap="base">
-          {cfg.showPill && (
-            <s-stack direction="inline">
-              <s-badge tone="neutral" color="base" icon="alert-circle">{t('pill')}</s-badge>
-            </s-stack>
-          )}
+          <s-stack direction="inline" gap="small" alignItems="center">
+            {cfg.showPill && <s-badge tone="neutral" color="base">{t('pill')}</s-badge>}
+            <s-text type="strong">{phase === 'confirm' ? t('confirm_heading') : t('heading')}</s-text>
+          </s-stack>
           {content}
         </s-stack>
       </s-banner>
