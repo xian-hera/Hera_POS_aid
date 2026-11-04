@@ -362,6 +362,92 @@ export function registerMemo(app, { graphql, requirePosAuth, rateLimit, safeEqua
     return res.json({ token: `${exp}.${signUnlock(exp)}`, expiresAt: Number(exp) * 1000 });
   });
 
+  // ── Head-office web page (memo-admin.js): every store + Global, no unlock needed ──
+
+  const LOCATIONS_QUERY = `
+    query MemoLocations {
+      locations(first: 100, includeInactive: false) {
+        nodes { id name displayName: metafield(namespace: "custom", key: "display_name") { value } }
+      }
+    }
+  `;
+
+  async function adminList() {
+    const [all, locData] = await Promise.all([loadAll(), graphql(LOCATIONS_QUERY, {})]);
+    const locations = (locData.locations?.nodes || []).map((l) => ({
+      id: l.id.split("/").pop(),
+      code: l.name,
+      name: displayNameOf(l.displayName?.value) || l.name,
+    }));
+    return { locations, memos: all };
+  }
+
+  // Same rules as the iPad (title required, same colors, revision check), without store/unlock checks.
+  async function adminSave(b, actor) {
+    const fields = [];
+    if (b.title !== undefined) {
+      const title = cleanTitle(b.title);
+      if (!title) return { status: 400, body: { error: "Please enter a title" } };
+      fields.push({ key: "title", value: title });
+    }
+    if (b.body !== undefined) fields.push({ key: "body", value: cleanBody(b.body) });
+    if (b.pinned !== undefined) fields.push({ key: "pinned", value: b.pinned ? "true" : "false" });
+    if (b.color !== undefined) fields.push({ key: "color", value: COLORS.includes(b.color) ? b.color : "success" });
+    if (!fields.length) return { status: 400, body: { error: "Nothing to save" } };
+    fields.push({ key: "updated_at", value: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") });
+    fields.push({ key: "updated_by", value: String(actor).slice(0, 40) });
+    fields.push({ key: "rev", value: crypto.randomBytes(6).toString("base64url") });
+
+    if (b.id) {
+      if (!isMemoId(b.id)) return { status: 400, body: { error: "Invalid memo" } };
+      const memo = await getMemo(b.id);
+      if (!memo) return { status: 404, body: { error: "This memo was deleted" } };
+      if (b.baseRev !== undefined && memo.rev && b.baseRev !== memo.rev) {
+        return { status: 409, body: { error: "Someone changed this memo in the meantime (on an iPad or another browser). Your text is still in the editor: copy it, then reload to see the new version.", current: memo } };
+      }
+      const updated = await gqlChecked(UPDATE, { id: b.id, metaobject: { fields } }, "metaobjectUpdate");
+      clearCache();
+      console.log(`[memo] ${memo.scope} memo updated on the head-office page (location ${memo.locationId || "-"})`);
+      return { status: 200, body: { memo: fromNode(updated.metaobject) } };
+    }
+
+    const scope = b.scope === "global" ? "global" : "location";
+    const locationId = String(b.locationId ?? "");
+    if (scope === "location" && !isNumericId(locationId)) return { status: 400, body: { error: "Choose a store" } };
+    if (b.title === undefined) return { status: 400, body: { error: "Please enter a title" } };
+    const all = await loadAll();
+    const count = all.filter((m) => m.scope === scope && (scope === "global" || m.locationId === locationId)).length;
+    if (count >= MAX_PER_LIST) return { status: 400, body: { error: `This list is full (${MAX_PER_LIST} memos). Delete old ones first.` } };
+    const loc = scope === "location" ? await locationInfo(locationId).catch(() => null) : null;
+    if (scope === "location" && !loc) return { status: 400, body: { error: "Unknown store" } };
+    const created = await gqlChecked(CREATE, {
+      metaobject: {
+        type: TYPE,
+        fields: [
+          { key: "scope", value: scope },
+          { key: "location_id", value: scope === "location" ? locationId : "" },
+          { key: "location_code", value: loc?.code || "" },
+          ...(b.pinned === undefined ? [{ key: "pinned", value: "false" }] : []),
+          { key: "size", value: "S" },
+          ...fields,
+        ],
+      },
+    }, "metaobjectCreate");
+    clearCache();
+    console.log(`[memo] ${scope} memo created on the head-office page (location ${locationId || "-"})`);
+    return { status: 200, body: { memo: fromNode(created.metaobject) } };
+  }
+
+  async function adminDelete(id) {
+    if (!isMemoId(id)) return { status: 400, body: { error: "Invalid memo" } };
+    const memo = await getMemo(id);
+    if (!memo) { clearCache(); return { status: 200, body: { deleted: true } }; }
+    await gqlChecked(DELETE, { id }, "metaobjectDelete");
+    clearCache();
+    console.log(`[memo] ${memo.scope} memo deleted on the head-office page ("${memo.title.slice(0, 40)}")`);
+    return { status: 200, body: { deleted: true } };
+  }
+
   // ── Start-up: create the metaobject definition if it is missing ──
   (async () => {
     try {
@@ -400,4 +486,6 @@ export function registerMemo(app, { graphql, requirePosAuth, rateLimit, safeEqua
       console.error("[memo] setup failed:", err.message);
     }
   })();
+
+  return { adminList, adminSave, adminDelete };
 }

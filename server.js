@@ -21,6 +21,7 @@ import { createGiftCardService, lookupBalance } from "./giftcard.js";
 import { registerRestock, RESTOCK_SCOPES } from "./restock.js";
 import { registerReport } from "./report.js";
 import { registerMemo } from "./memo.js";
+import { registerMemoAdmin } from "./memo-admin.js";
 import { registerPoints } from "./points.js";
 import { registerAddressCheck } from "./address.js";
 
@@ -638,12 +639,15 @@ const restockHelpers = registerRestock(app, {
 // ─── POS: MEMO tile (memo.js) ─────────────────────────────────────────────────
 // Store memos + Global memos (Global editing unlocked with MEMO_PASSWORD for 30 minutes).
 
-registerMemo(app, {
+const memoHelpers = registerMemo(app, {
   graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 20000, attempts: 2 }),
   requirePosAuth: requirePosAuthStrict,
   rateLimit,
   safeEqual,
 });
+
+// Head-office page to view and edit every store's memos: /memo (memo-admin.js)
+registerMemoAdmin(app, { rateLimit, safeEqual, memo: memoHelpers });
 
 // ─── POS: points printed on the receipt (points.js) ───────────────────────────
 // The background extension "points-sync" sends the cart; the receipt's Liquid block prints the result.

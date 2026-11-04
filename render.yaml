@@ -64,6 +64,9 @@ services:
       # MEMO tile: password that unlocks editing of Global memos for 30 minutes (6+ characters)
       - key: MEMO_PASSWORD
         sync: false
+      # MEMO head-office page /memo: password (10+ characters). Optional: REPORT_PASSWORD is used when it is not set
+      - key: MEMO_ADMIN_PASSWORD
+        sync: false
       # Receipt points: campaign multiplier for the estimate (optional, default 1)
       - key: POINTS_MULTIPLIER
         sync: false

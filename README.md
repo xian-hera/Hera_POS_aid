@@ -66,6 +66,7 @@ once and then migrated automatically.
 | `WWDR_PEM_B64`, `SIGNER_CERT_B64`, `SIGNER_KEY_B64` | Apple certificates, base64-encoded |
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
 | `MEMO_PASSWORD` | Password that unlocks editing of Global memos in the MEMO tile for 30 minutes on that iPad (6+ characters). Changing it locks every iPad again. Global editing is off when it is missing. |
+| `MEMO_ADMIN_PASSWORD` | Optional. Password of the MEMO head-office page `/memo` (10+ characters). When missing, `REPORT_PASSWORD` is used. |
 | `POINTS_MULTIPLIER` | Optional. Points campaign multiplier for the receipt estimate (e.g. `2`). Default `1`. |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
@@ -265,6 +266,18 @@ link under the block preview opens the entry (customers never see it).
 
 Testing tools: `node tools/nar-lookup.js "<NAR_refined>"` (type addresses one by one) and
 `node tools/nar-batch.js "<NAR_refined>" tools/nar-test-addresses.txt` (a list; that file is not committed).
+
+## MEMO head-office page
+
+`https://search-0wf4.onrender.com/memo`: view and edit the memos of every store and the Global memos in a browser.
+Code: `memo-admin.js`, pages `memo-admin/index.html` and `memo-admin/login.html`.
+
+- Password: `MEMO_ADMIN_PASSWORD` (10+ characters). When it is not set, `REPORT_PASSWORD` is used. 12-hour session.
+- Left: Global and every active store with its number of memos. Search looks in all stores.
+- Click a memo to edit it (title, color, pinned, text, live preview) or delete it; "Add memo" adds one to the selected list.
+  Global needs no unlock here.
+- Same data and rules as the iPads; a change made at the same time on an iPad is not overwritten (the second save is refused).
+  iPads show changes after Refresh.
 
 ## Deploy
 

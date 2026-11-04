@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>MEMO · Head office</title>
+<style>
+  :root {
+    --bg:#f6f5f3; --card:#fff; --text:#1d1b19; --muted:#6b665f; --line:#e3dfd9; --soft:#f1eeea;
+    --accent:#b0124a; --accent-soft:#fbe9ef; --err:#b42318; --err-soft:#fdecea;
+    --info:#1d4ed8; --info-bg:#dbeafe; --success:#1e7a46; --success-bg:#d9f2e3;
+    --warning:#9a4a00; --warning-bg:#ffe4c7; --critical:#b42318; --critical-bg:#fde0dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151413; --card:#1f1d1b; --text:#f2efeb; --muted:#a39d95; --line:#34312d; --soft:#272421;
+            --accent:#e0457b; --accent-soft:#3a1d27; --err:#ff7a6e; --err-soft:#3b1d1a;
+            --info:#93b4ff; --info-bg:#1c2b4d; --success:#7fd6a2; --success-bg:#183526;
+            --warning:#f5b871; --warning-bg:#3d2a14; --critical:#ff8f84; --critical-bg:#40201c; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { position:sticky; top:0; z-index:5; background:var(--card); border-bottom:1px solid var(--line); }
+  .bar { display:flex; align-items:center; gap:12px; padding:12px 20px; max-width:1400px; margin:0 auto; }
+  .bar h1 { font-size:17px; margin:0; white-space:nowrap; }
+  .bar .meta { color:var(--muted); font-size:12px; }
+  .bar .grow { flex:1; }
+  input[type=search], input[type=text], textarea {
+    font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%;
+  }
+  input:focus, textarea:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--text); border-radius:8px; padding:7px 12px; cursor:pointer; }
+  button:hover { background:var(--soft); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.primary:hover { filter:brightness(1.05); }
+  button.danger { color:var(--err); }
+  button.danger.confirm { background:var(--err); border-color:var(--err); color:#fff; }
+  button:disabled { opacity:.55; cursor:default; }
+  .layout { display:grid; grid-template-columns:240px 1fr; gap:20px; max-width:1400px; margin:0 auto; padding:20px; }
+  nav { display:flex; flex-direction:column; gap:2px; position:sticky; top:72px; align-self:start; max-height:calc(100vh - 90px); overflow:auto; }
+  nav button { display:flex; justify-content:space-between; align-items:center; gap:8px; text-align:left; border:0; background:transparent; padding:8px 10px; }
+  nav button.on { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  nav .count { color:var(--muted); font-size:12px; font-weight:400; }
+  nav .sep { border-top:1px solid var(--line); margin:6px 0; }
+  nav .code { display:block; color:var(--muted); font-size:11px; font-weight:400; }
+  main h2 { font-size:18px; margin:0; }
+  .head { display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  .head .meta { color:var(--muted); font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; cursor:pointer; display:flex; flex-direction:column; gap:10px; min-width:0; }
+  .card:hover { border-color:var(--accent); }
+  .card .where { color:var(--muted); font-size:11px; }
+  .titleline { display:flex; align-items:center; gap:8px; min-width:0; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--critical); flex:none; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-weight:600; font-size:13px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pill.info { color:var(--info); background:var(--info-bg); }
+  .pill.success { color:var(--success); background:var(--success-bg); }
+  .pill.warning { color:var(--warning); background:var(--warning-bg); }
+  .pill.critical { color:var(--critical); background:var(--critical-bg); }
+  .memo-text { display:grid; grid-template-columns:max-content 1fr; column-gap:18px; row-gap:3px; min-width:0; }
+  .memo-text .full { grid-column:1 / -1; }
+  .memo-text .gap { grid-column:1 / -1; height:8px; }
+  .memo-text .l, .memo-text .r, .memo-text .full { overflow-wrap:anywhere; }
+  .card .memo-text { max-height:13.5em; overflow:hidden; }
+  .card .memo-text .l, .card .memo-text .r, .card .memo-text .full { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .empty { color:var(--muted); padding:30px 0; }
+  .banner { padding:10px 12px; border-radius:8px; margin-bottom:12px; }
+  .banner.err { background:var(--err-soft); color:var(--err); }
+  /* Editor */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:flex-start; justify-content:center; padding:40px 16px; overflow:auto; z-index:10; }
+  .overlay.open { display:flex; }
+  .editor { background:var(--card); border-radius:14px; width:min(1000px, 100%); padding:20px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .editor h3 { grid-column:1 / -1; margin:0; font-size:17px; }
+  .editor .col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .editor label { font-weight:600; font-size:13px; display:block; margin-bottom:4px; }
+  .editor textarea { min-height:320px; resize:vertical; font-family:inherit; }
+  .colors { display:flex; gap:6px; flex-wrap:wrap; }
+  .colors button.on { outline:2px solid var(--text); outline-offset:1px; }
+  .hint { color:var(--muted); font-size:12px; }
+  .preview { border:1px solid var(--line); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .actions { grid-column:1 / -1; display:flex; gap:8px; align-items:center; }
+  .actions .grow { flex:1; }
+  .editor .err { color:var(--err); }
+  @media (max-width: 760px) {
+    .layout { grid-template-columns:1fr; }
+    nav { position:static; flex-direction:row; flex-wrap:wrap; max-height:none; }
+    .editor { grid-template-columns:1fr; }
+    .bar .meta { display:none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>MEMO</h1>
+    <span class="meta">Hera Beauté · head office</span>
+    <span class="grow"></span>
+    <input type="search" id="q" placeholder="Search all stores" style="max-width:280px">
+    <button id="refresh">Refresh</button>
+    <button id="logout">Sign out</button>
+  </div>
+</header>
+
+<div class="layout">
+  <nav id="nav"></nav>
+  <main>
+    <div id="error"></div>
+    <div class="head">
+      <h2 id="listTitle">Loading…</h2>
+      <span class="meta" id="listMeta"></span>
+      <span style="flex:1"></span>
+      <button class="primary" id="add" disabled>Add memo</button>
+    </div>
+    <div id="list" class="grid"></div>
+  </main>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="editor" role="dialog" aria-modal="true" aria-labelledby="edTitle">
+    <h3 id="edTitle">New memo</h3>
+    <div class="col">
+      <div>
+        <label for="fTitle">Title</label>
+        <input type="text" id="fTitle" maxlength="80">
+      </div>
+      <div>
+        <label>Color</label>
+        <div class="colors" id="fColors"></div>
+      </div>
+      <div><label><input type="checkbox" id="fPinned"> Pinned (shown first, with a red dot)</label></div>
+      <div>
+        <label for="fBody">Text</label>
+        <textarea id="fBody" maxlength="4000"></textarea>
+        <div class="hint">Wrap text with [ ] gives bold, insert | to create a column, you can only have 2 columns max. E.g., [MTL01] | Cote-des-Neige.</div>
+      </div>
+    </div>
+    <div class="col">
+      <label>Preview</label>
+      <div class="preview" id="preview"></div>
+      <div class="hint" id="edMeta"></div>
+    </div>
+    <div class="actions">
+      <button class="danger" id="del">Delete</button>
+      <span class="err" id="edError"></span>
+      <span class="grow"></span>
+      <button id="cancel">Cancel</button>
+      <button class="primary" id="save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const COLORS = [
+    { value: 'info', label: 'Blue' },
+    { value: 'success', label: 'Green' },
+    { value: 'warning', label: 'Orange' },
+    { value: 'critical', label: 'Red' },
+  ];
+  const DEFAULT_COLOR = 'success';
+  const toneOf = (c) => (c === 'caution' ? 'warning' : COLORS.some((x) => x.value === c) ? c : DEFAULT_COLOR);
+  const PILL_RE = /\[([^\[\]\n]{1,40})\]/g;
+
+  let data = { locations: [], memos: [] };
+  let current = 'global';     // 'global' or a location id
+  let editing = null;         // { id?, scope, locationId, baseRev, color }
+  let confirmDelete = false;
+  let busy = false;
+
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+
+  async function call(method, url, body) {
+    const r = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin',
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 401) { location.reload(); throw new Error('Signed out'); }
+    if (!r.ok) { const e = new Error(d.error || `Request failed (${r.status})`); e.status = r.status; e.data = d; throw e; }
+    return d;
+  }
+
+  // ── Text: same rules as the iPad ([bold], "left | right", empty lines) ──
+  function lineParts(text) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(PILL_RE)) {
+      if (m.index > last) frag.append(text.slice(last, m.index));
+      frag.append(el('strong', '', m[1].trim()));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) frag.append(text.slice(last));
+    return frag;
+  }
+  function memoText(body, { card } = {}) {
+    const box = el('div', 'memo-text');
+    const lines = String(body || '').split('\n').filter((l) => !card || l.trim());
+    for (const line of lines) {
+      if (!line.trim()) { box.append(el('div', 'gap')); continue; }
+      const bar = line.indexOf('|');
+      if (bar >= 0) {
+        const l = el('div', 'l'); l.append(lineParts(line.slice(0, bar).trim()));
+        const r = el('div', 'r'); r.append(lineParts(line.slice(bar + 1).trim()));
+        box.append(l, r);
+      } else {
+        const f = el('div', 'full'); f.append(lineParts(line.trim()));
+        box.append(f);
+      }
+    }
+    return box;
+  }
+  function titleLine(m) {
+    const t = el('div', 'titleline');
+    if (m.pinned) t.append(el('span', 'dot'));
+    t.append(el('span', `pill ${toneOf(m.color)}`, m.title || 'Title'));
+    return t;
+  }
+
+  // ── Lists ──
+  const storeName = (id) => {
+    const l = data.locations.find((x) => x.id === id);
+    return l ? l.name : `Store ${id}`;
+  };
+  const listOf = (key) => data.memos.filter((m) => (key === 'global' ? m.scope === 'global' : m.scope === 'location' && m.locationId === key));
+  const sortMemos = (list) => [...list].sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || a.title.localeCompare(b.title));
+
+  function renderNav() {
+    const nav = $('nav');
+    nav.replaceChildren();
+    const item = (key, label, code) => {
+      const b = el('button', key === current && !$('q').value.trim() ? 'on' : '');
+      const name = el('span', '', label);
+      if (code && code !== label) name.append(el('span', 'code', code));
+      b.append(name, el('span', 'count', String(listOf(key).length)));
+      b.onclick = () => { current = key; $('q').value = ''; render(); };
+      return b;
+    };
+    nav.append(item('global', 'Global · all stores'));
+    nav.append(el('div', 'sep'));
+    for (const l of [...data.locations].sort((a, b) => a.name.localeCompare(b.name))) nav.append(item(l.id, l.name, l.code));
+    // Memos of stores that are no longer active
+    const known = new Set(data.locations.map((l) => l.id));
+    const orphans = [...new Set(data.memos.filter((m) => m.scope === 'location' && !known.has(m.locationId)).map((m) => m.locationId))];
+    for (const id of orphans) nav.append(item(id, `Inactive store ${id}`));
+  }
+
+  function card(m, showWhere) {
+    const c = el('div', 'card');
+    if (showWhere) c.append(el('div', 'where', m.scope === 'global' ? 'Global' : storeName(m.locationId)));
+    c.append(titleLine(m), memoText(m.body, { card: true }));
+    c.onclick = () => openEditor(m);
+    return c;
+  }
+
+  function render() {
+    renderNav();
+    const q = $('q').value.trim().toLowerCase();
+    const list = $('list');
+    list.replaceChildren();
+    let memos;
+    if (q) {
+      memos = data.memos.filter((m) => `${m.title}\n${m.body}`.toLowerCase().includes(q));
+      $('listTitle').textContent = `Search: “${$('q').value.trim()}”`;
+      $('listMeta').textContent = `${memos.length} memo${memos.length === 1 ? '' : 's'} in all stores`;
+      $('add').disabled = true;
+    } else {
+      memos = listOf(current);
+      $('listTitle').textContent = current === 'global' ? 'Global · all stores' : storeName(current);
+      const l = data.locations.find((x) => x.id === current);
+      $('listMeta').textContent = current === 'global' ? 'Shown at every store' : (l ? `Store code ${l.code}` : '');
+      $('add').disabled = false;
+    }
+    if (!memos.length) list.append(el('div', 'empty', q ? 'No memo matches this search.' : 'No memos yet. Click “Add memo”.'));
+    for (const m of sortMemos(memos)) list.append(card(m, Boolean(q)));
+  }
+
+  async function load() {
+    $('error').replaceChildren();
+    try {
+      data = await call('GET', '/memo/data');
+      render();
+    } catch (e) {
+      $('error').append(el('div', 'banner err', `Could not load the memos: ${e.message}`));
+    }
+  }
+
+  // ── Editor ──
+  function renderColors() {
+    const box = $('fColors');
+    box.replaceChildren();
+    for (const c of COLORS) {
+      const b = el('button', `pill ${c.value}${editing.color === c.value ? ' on' : ''}`, c.label);
+      b.type = 'button';
+      b.onclick = () => { editing.color = c.value; renderColors(); renderPreview(); };
+      box.append(b);
+    }
+  }
+  function renderPreview() {
+    const p = $('preview');
+    p.replaceChildren(titleLine({ title: $('fTitle').value.trim(), color: editing.color, pinned: $('fPinned').checked }), memoText($('fBody').value));
+  }
+  function openEditor(m) {
+    confirmDelete = false;
+    if (m) {
+      editing = { id: m.id, scope: m.scope, locationId: m.locationId, baseRev: m.rev, color: toneOf(m.color) };
+      $('edTitle').textContent = `Edit memo · ${m.scope === 'global' ? 'Global' : storeName(m.locationId)}`;
+      $('fTitle').value = m.title;
+      $('fBody').value = m.body;
+      $('fPinned').checked = m.pinned;
+      $('edMeta').textContent = m.updatedAt ? `Last saved ${new Date(m.updatedAt).toLocaleString('en-CA')}${m.updatedBy ? ` · by ${/^\d+$/.test(m.updatedBy) ? `POS staff ${m.updatedBy}` : m.updatedBy}` : ''}` : '';
+      $('del').style.display = '';
+    } else {
+      editing = { scope: current === 'global' ? 'global' : 'location', locationId: current === 'global' ? '' : current, color: DEFAULT_COLOR };
+      $('edTitle').textContent = `New memo · ${current === 'global' ? 'Global' : storeName(current)}`;
+      $('fTitle').value = '';
+      $('fBody').value = '';
+      $('fPinned').checked = false;
+      $('edMeta').textContent = '';
+      $('del').style.display = 'none';
+    }
+    $('del').textContent = 'Delete';
+    $('del').classList.remove('confirm');
+    $('edError').textContent = '';
+    renderColors();
+    renderPreview();
+    $('overlay').classList.add('open');
+    $('fTitle').focus();
+  }
+  function closeEditor() { $('overlay').classList.remove('open'); editing = null; }
+
+  function setBusy(on) {
+    busy = on;
+    for (const id of ['save', 'del', 'cancel']) $(id).disabled = on;
+  }
+
+  async function save() {
+    if (busy) return;
+    const title = $('fTitle').value.trim();
+    if (!title) { $('edError').textContent = 'Please enter a title.'; return; }
+    const body = { title, body: $('fBody').value, pinned: $('fPinned').checked, color: editing.color };
+    if (editing.id) Object.assign(body, { id: editing.id, baseRev: editing.baseRev });
+    else Object.assign(body, { scope: editing.scope, locationId: editing.locationId });
+    setBusy(true);
+    $('edError').textContent = 'Saving…';
+    try {
+      await call('POST', '/memo/save', body);
+      closeEditor();
+      await load();
+    } catch (e) {
+      $('edError').textContent = e.message;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (busy || !editing?.id) return;
+    if (!confirmDelete) {
+      confirmDelete = true;
+      $('del').textContent = 'Click again to delete';
+      $('del').classList.add('confirm');
+      return;
+    }
+    setBusy(true);
+    try {
+      await call('POST', '/memo/delete', { id: editing.id });
+      closeEditor();
+      await load();
+    } catch (e) {
+      $('edError').textContent = e.message;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Wiring ──
+  $('add').onclick = () => openEditor(null);
+  $('save').onclick = save;
+  $('del').onclick = remove;
+  $('cancel').onclick = closeEditor;
+  $('overlay').addEventListener('click', (e) => { if (e.target === $('overlay') && !busy) closeEditor(); });
+  document.addEventListener('keydown', (e) => {
+    if (!editing) return;
+    if (e.key === 'Escape' && !busy) closeEditor();
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
+  });
+  $('fTitle').addEventListener('input', renderPreview);
+  $('fBody').addEventListener('input', renderPreview);
+  $('fPinned').addEventListener('change', renderPreview);
+  $('q').addEventListener('input', render);
+  $('refresh').onclick = load;
+  $('logout').onclick = async () => { await fetch('/memo/logout', { method: 'POST' }); location.reload(); };
+
+  load();
+})();
+</script>
+</body>
+</html>
