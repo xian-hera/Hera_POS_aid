@@ -382,6 +382,16 @@ app.use("/api/unit", (req, res, next) => {
   next();
 });
 
+// ─── Diagnostics for the background extension "points-sync" (temporary) ───────
+// Logs every request to its two routes, including the CORS preflight (OPTIONS) and the Origin
+// header, so we can tell "the extension never ran" from "it ran but the browser blocked the call".
+app.use(["/api/points", "/api/pos/clientlog"], (req, res, next) => {
+  if (req.method === "OPTIONS" || req.path.startsWith("/api/points") || req.baseUrl === "/api/points" || req.body?.tile === "points") {
+    console.log(`[points-diag] ${req.method} ${req.originalUrl} · origin ${req.headers.origin || "none"} · auth ${req.headers.authorization ? "yes" : "no"}`);
+  }
+  next();
+});
+
 // ─── CORS (only the POS extension origins need it) ────────────────────────────
 
 const POS_ORIGINS = new Set(["https://cdn.shopify.com", "https://extensions.shopifycdn.com"]);
