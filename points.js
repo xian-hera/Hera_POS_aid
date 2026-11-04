@@ -7,12 +7,16 @@
 //   custom.receipt_points_before    Smile balance when the cart was last changed
 //   custom.receipt_points_earned    points this cart should earn
 //   custom.receipt_points_total     before + earned  (printed on the receipt)
-//   custom.receipt_points_subtotal  the cart's pre-tax amount in cents. The receipt prints the
-//                                   total only when this equals the order's subtotal; otherwise
-//                                   (an old receipt reprinted, the cart changed at the last second)
-//                                   it prints custom.points_balance instead. -1 = "no estimate".
+//   custom.receipt_points_subtotal  the cart's pre-tax amount in cents (-1 = "no estimate")
+//   custom.receipt_points_paid      the same amount as text, e.g. "18.98", and
+//   custom.receipt_points_paid_num  as a decimal number: the receipt prints the total only when one
+//                                   of them equals the order's subtotal ({{ order.subtotal_price }}
+//                                   prints "18.98" on the receipt); otherwise (an old receipt
+//                                   reprinted, the cart changed at the last second) it prints
+//                                   custom.points_balance instead.
 //
-// Smile rule (Nov 2026): 1 point per $1 paid before tax, rounded down; products with a
+// Smile rule (Nov 2026): 1 point per $1 paid before tax, rounded to the NEAREST whole point
+// (0.5 and above rounds up: Smile help center; seen on a real order: $18.98 → 19 points); products with a
 // compare-at price earn nothing; gift cards earn nothing. Multiplier campaigns: POINTS_MULTIPLIER.
 // custom.points_balance (Apple Wallet) is never changed here: it stays the real Smile balance.
 
@@ -24,13 +28,20 @@ const KEYS = {
   earned: "receipt_points_earned",
   total: "receipt_points_total",
   subtotal: "receipt_points_subtotal",
+  paid: "receipt_points_paid",
+  paidNum: "receipt_points_paid_num",
 };
+const TYPES = { paid: "single_line_text_field", paidNum: "number_decimal" }; // the others: number_integer
 const DEFINITIONS = [
   { key: KEYS.before, name: "Receipt points: balance before", description: "Smile balance read when the POS cart last changed (Hera_POS_aid, receipt only)" },
   { key: KEYS.earned, name: "Receipt points: earned", description: "Estimated points of the POS cart (Hera_POS_aid, receipt only)" },
   { key: KEYS.total, name: "Receipt points: total", description: "Balance before + estimated points, printed on the POS receipt (Hera_POS_aid)" },
   { key: KEYS.subtotal, name: "Receipt points: cart subtotal", description: "Pre-tax amount of that cart in cents; the receipt compares it with the order (Hera_POS_aid)" },
+  { key: KEYS.paid, type: TYPES.paid, name: "Receipt points: cart subtotal (text)", description: "Pre-tax amount of that cart, e.g. 18.98; the receipt compares it with the order (Hera_POS_aid)" },
+  { key: KEYS.paidNum, type: TYPES.paidNum, name: "Receipt points: cart subtotal (number)", description: "Pre-tax amount of that cart as a number; the receipt compares it with the order (Hera_POS_aid)" },
 ];
+// "No estimate": nothing on the receipt can match any order
+const NO_ESTIMATE = { subtotal: -1, paid: "none", paidNum: "-1" };
 
 const isNumericId = (v) => /^\d{1,20}$/.test(String(v ?? ""));
 const gid = (kind, id) => `gid://shopify/${kind}/${id}`;
@@ -77,7 +88,7 @@ export function estimatePoints({ lines, paid, excluded, multiplier = 1 }) {
     if (!excluded(l)) eligible += net;
   });
   eligible = Math.min(eligible, Math.max(0, paid));
-  return { eligible, points: Math.floor(eligible + 1e-6) * multiplier };
+  return { eligible, points: Math.round(eligible + 1e-6) * multiplier }; // Smile: nearest whole point
 }
 
 export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileApiKey, giftProductId }) {
@@ -131,6 +142,67 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileA
     return c ? Math.max(0, parseInt(c.points_balance ?? 0, 10) || 0) : 0; // not in Smile yet = 0
   }
 
+  // ── Temporary test (runs once at start-up, only when the Render variables are set) ──
+  // Question: can Smile's public API find a customer from the Shopify customer ID (customers with
+  // a phone number but no email)? Set SMILE_PROBE_SMILE_ID (the number in "View in Smile", e.g.
+  // 3619048508) and SMILE_PROBE_SHOPIFY_ID (the same customer's Shopify ID). The log shows only
+  // field names, HTTP statuses, counts and yes/no matches: no names, emails or phone numbers.
+  // Remove both variables afterwards.
+  async function smileProbe() {
+    const smileId = String(process.env.SMILE_PROBE_SMILE_ID || "").trim();
+    const shopifyId = String(process.env.SMILE_PROBE_SHOPIFY_ID || "").trim();
+    if (!smileId && !shopifyId) return;
+    if ((smileId && !isNumericId(smileId)) || (shopifyId && !isNumericId(shopifyId))) {
+      return console.warn("[smile-probe] the probe IDs must be numbers");
+    }
+    const get = async (path) => {
+      try {
+        const r = await fetch(`https://api.smile.io/v1/${path}`, {
+          headers: { Authorization: `Bearer ${smileApiKey}` },
+          signal: AbortSignal.timeout(8000),
+        });
+        let body = null;
+        try { body = await r.json(); } catch { /* not JSON */ }
+        return { status: r.status, body };
+      } catch (e) {
+        return { status: `error ${e.message}`, body: null };
+      }
+    };
+    const has = (v) => shopifyId && JSON.stringify(v ?? "").includes(shopifyId);
+    console.log(`[smile-probe] start (smile id ${smileId ? "set" : "-"}, shopify id ${shopifyId ? "set" : "-"})`);
+
+    if (smileId) {
+      const r = await get(`customers/${smileId}`);
+      const c = r.body?.customer || r.body;
+      console.log(`[smile-probe] GET customers/{smileId} → ${r.status} · fields: ${c && typeof c === "object" ? Object.keys(c).join(", ") : "-"}`);
+      if (c && typeof c === "object") {
+        for (const [k, v] of Object.entries(c)) {
+          if (v && typeof v === "object") console.log(`[smile-probe]   ${k} → fields: ${Object.keys(v).join(", ")}`);
+          if (has(v)) console.log(`[smile-probe]   field "${k}" CONTAINS the Shopify ID`);
+        }
+        console.log(`[smile-probe]   points_balance present: ${c.points_balance !== undefined ? "yes" : "no"}`);
+      }
+      for (const path of [`customers/${smileId}/customer_identities`, `customer_identities?customer_id=${smileId}`]) {
+        const x = await get(path);
+        console.log(`[smile-probe] GET ${path.replace(smileId, "{smileId}")} → ${x.status} · keys: ${x.body ? Object.keys(x.body).join(", ") : "-"} · contains Shopify ID: ${has(x.body) ? "YES" : "no"}`);
+      }
+    }
+
+    if (shopifyId) {
+      for (const param of ["external_id", "shopify_customer_id", "shopify_id", "origin_id", "external_customer_id"]) {
+        const x = await get(`customers?${param}=${shopifyId}`);
+        const list = x.body?.customers || [];
+        const match = smileId ? list.some((c) => String(c.id) === smileId) : null;
+        console.log(`[smile-probe] GET customers?${param}={shopifyId} → ${x.status} · ${list.length} customer(s)${match === null ? "" : ` · expected customer among them: ${match ? "YES" : "no"}`}`);
+      }
+      for (const path of [`customer_identities?external_id=${shopifyId}`, `customer_identities?identity=${shopifyId}`]) {
+        const x = await get(path);
+        console.log(`[smile-probe] GET ${path.replace(shopifyId, "{shopifyId}")} → ${x.status} · keys: ${x.body ? Object.keys(x.body).join(", ") : "-"} · contains Shopify ID: ${has(x.body) ? "YES" : "no"}`);
+      }
+    }
+    console.log("[smile-probe] done: remove SMILE_PROBE_SMILE_ID and SMILE_PROBE_SHOPIFY_ID from Render");
+  }
+
   async function writeReceipt(customerId, values) {
     await gqlChecked(
       `mutation PointsReceipt($metafields: [MetafieldsSetInput!]!) {
@@ -138,7 +210,7 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileA
       }`,
       {
         metafields: Object.entries(values).map(([k, v]) => ({
-          ownerId: gid("Customer", customerId), namespace: NS, key: KEYS[k], type: "number_integer", value: String(v),
+          ownerId: gid("Customer", customerId), namespace: NS, key: KEYS[k], type: TYPES[k] || "number_integer", value: String(v),
         })),
       },
       "metafieldsSet"
@@ -199,12 +271,12 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileA
         const { eligible, points } = estimatePoints({ lines, paid, excluded, multiplier: MULTIPLIER });
 
         if (!email) {
-          await writeReceipt(customerId, { subtotal: -1 });
+          await writeReceipt(customerId, NO_ESTIMATE);
           return { noEmail: true, earned: points };
         }
         const before = await smileBalance(email);
         if (seq < (latestSeq.get(customerId) || 0)) return { skipped: "newer cart" };
-        const values = { before, earned: points, total: before + points, subtotal: cents(paid) };
+        const values = { before, earned: points, total: before + points, subtotal: cents(paid), paid: paid.toFixed(2), paidNum: paid.toFixed(2) };
         await writeReceipt(customerId, values);
         console.log(
           `[points] customer ${customerId}: ${before} + ${points} = ${before + points} ` +
@@ -217,7 +289,7 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileA
     } catch (err) {
       console.error(`[points] customer ${customerId} failed: ${err.message}`);
       // No estimate: the receipt then prints custom.points_balance
-      if (seq >= (latestSeq.get(customerId) || 0)) writeReceipt(customerId, { subtotal: -1 }).catch(() => {});
+      if (seq >= (latestSeq.get(customerId) || 0)) writeReceipt(customerId, NO_ESTIMATE).catch(() => {});
       return res.status(502).json({ error: "Could not estimate points" });
     }
   });
@@ -235,12 +307,13 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileA
           `mutation PointsDefCreate($definition: MetafieldDefinitionInput!) {
             metafieldDefinitionCreate(definition: $definition) { createdDefinition { id } userErrors { field message code } }
           }`,
-          { definition: { ownerType: "CUSTOMER", namespace: NS, key: d.key, name: d.name, description: d.description, type: "number_integer" } },
+          { definition: { ownerType: "CUSTOMER", namespace: NS, key: d.key, name: d.name, description: d.description, type: d.type || "number_integer" } },
           "metafieldDefinitionCreate"
         );
         console.log(`[points] created customer metafield definition ${NS}.${d.key}`);
       }
       console.log(`[points] ready (multiplier x${MULTIPLIER})`);
+      await smileProbe();
     } catch (err) {
       console.error("[points] setup failed:", err.message);
     }
