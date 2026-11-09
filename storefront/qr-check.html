@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Hera Gift Card QR Check</title>
+<style>
+  :root { --brand:#E32A69; --ok:#157347; --bad:#c0262d; --warn:#9a6700; --line:#e4e4e7; --bg:#fafafa; --ink:#1c1c1e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:1.35rem; margin:0 0 6px; }
+  p { margin:0 0 10px; }
+  .muted { color:#555; font-size:.92rem; }
+  .btns { display:flex; flex-wrap:wrap; gap:10px; margin:14px 0; }
+  button, .filebtn { appearance:none; border:0; border-radius:999px; background:var(--brand); color:#fff; font:inherit; font-weight:600; padding:11px 20px; cursor:pointer; }
+  button.alt, .filebtn.alt { background:#fff; color:var(--brand); border:2px solid var(--brand); padding:9px 18px; }
+  button[hidden] { display:none; }
+  #camwrap { position:relative; background:#000; border-radius:12px; overflow:hidden; display:none; }
+  #camwrap.on { display:block; }
+  video { width:100%; display:block; max-height:55vh; object-fit:cover; }
+  #summary { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:16px 0; }
+  .slot { border:2px solid var(--line); border-radius:12px; padding:10px 12px; background:#fff; }
+  .slot b { display:block; }
+  .slot.ok { border-color:var(--ok); } .slot.bad { border-color:var(--bad); }
+  .result { background:#fff; border:2px solid var(--line); border-radius:12px; padding:12px 14px; margin:12px 0; }
+  .result.ok { border-color:var(--ok); } .result.bad { border-color:var(--bad); } .result.warn { border-color:var(--warn); }
+  .tag { display:inline-block; font-weight:700; font-size:.85rem; border-radius:6px; padding:1px 8px; color:#fff; }
+  .tag.ok { background:var(--ok); } .tag.bad { background:var(--bad); } .tag.warn { background:var(--warn); }
+  code { display:block; background:#f3f3f5; border-radius:8px; padding:8px 10px; margin:8px 0; word-break:break-all; font:14px/1.4 ui-monospace,Menlo,Consolas,monospace; }
+  ul { margin:6px 0 0; padding-left:1.2rem; }
+  li { margin:3px 0; }
+  .zh { display:block; } .en { display:block; color:#555; font-size:.92rem; }
+  #msg { min-height:1.5em; }
+  hr { border:0; border-top:1px solid var(--line); margin:22px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hera 礼品卡二维码检查<br><span style="font-weight:500;font-size:1rem;color:#555">Hera Gift Card QR Check</span></h1>
+
+  <p>请用手机扫描样卡上的两个二维码，页面会显示二维码里<b>真实存储的内容</b>，并判断是否符合要求。所有识别都在手机上完成，不会上传任何内容。</p>
+  <p class="muted">Scan the two QR codes on a sample card. This page shows exactly what is stored in each code and checks it against our requirements. Everything is decoded on your phone; nothing is uploaded.</p>
+
+  <div class="btns">
+    <button id="start" type="button">开启相机 / Start camera</button>
+    <button id="stop" type="button" class="alt" hidden>关闭相机 / Stop camera</button>
+    <label class="filebtn alt">上传照片 / Upload photo<input id="file" type="file" accept="image/*" hidden></label>
+    <button id="reset" type="button" class="alt">清除 / Clear</button>
+  </div>
+  <div id="camwrap"><video id="video" playsinline muted></video></div>
+  <canvas id="canvas" hidden></canvas>
+  <p id="msg" class="muted"></p>
+
+  <div id="summary">
+    <div class="slot" id="slotA"><b>A 码（左，刮开贴纸下）</b><span class="muted">A code (left, under the sticker)</span><div class="state">未扫到 / not scanned</div></div>
+    <div class="slot" id="slotB"><b>B 码（右，贴纸外）</b><span class="muted">B code (right, outside the sticker)</span><div class="state">未扫到 / not scanned</div></div>
+  </div>
+
+  <div id="results"></div>
+
+  <hr>
+  <p class="muted"><b>要求 / Requirements</b></p>
+  <ul class="muted">
+    <li>A 码二维码内容必须是 <code style="display:inline;padding:1px 6px">shopify-giftcard-v1-</code> 加 12 位小写字母或数字，没有其他字符。<br>A code QR: the text <code style="display:inline;padding:1px 6px">shopify-giftcard-v1-</code> followed by 12 lowercase letters/digits, nothing else.</li>
+    <li>B 码二维码内容必须是 17 位大写字符，以 HGB 开头，没有其他字符。<br>B code QR: exactly 17 uppercase characters starting with HGB, nothing else.</li>
+    <li>二维码内容里不能有空格、换行或其他看不见的字符。<br>No spaces, line breaks or invisible characters inside the QR content.</li>
+    <li>如果手机很难扫出来，说明印刷太小、太淡或有反光，请改进后再测。<br>If your phone struggles to read a code, the print is probably too small, too faint or too glossy.</li>
+  </ul>
+</main>
+
+<script src="/apps/hera/giftcard-balance/jsqr.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PREFIX = 'shopify-giftcard-v1-';
+  var B_SYMBOLS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+  var A_LEN = 12;
+  var B_LEN = 17;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+  var found = {};        // raw content -> true
+  var order = [];        // raw contents in the order they were found
+  var stream = null, timer = null, frame = 0;
+
+  function msg(zh, en) { $('msg').textContent = zh ? zh + ' / ' + en : ''; }
+
+  // ── Checking rules ─────────────────────────────────────────────────────────
+  function showable(s) {
+    // JSON.stringify keeps control characters visible (\r, \n, \u001b); also expose zero-width and similar.
+    return JSON.stringify(s).replace(/[\u007f-\u009f\u200b-\u200f\u2028\u2029\ufeff]/g, function (c) {
+      return '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4);
+    });
+  }
+
+  function analyze(raw) {
+    var fails = [], warns = [];
+    var trimmed = raw.replace(/^[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\ufeff]+|[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\ufeff]+$/g, '');
+    if (trimmed !== raw) {
+      warns.push(['内容开头或结尾带有换行、空格或看不见的字符（我们的系统能处理，但请去掉）',
+                  'Content starts or ends with a line break, space or invisible character (our system copes, but please remove it)']);
+    }
+    if (/[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\ufeff]/.test(trimmed)) {
+      fails.push(['内容中间含有空格、换行或看不见的字符', 'Spaces, line breaks or invisible characters inside the content']);
+    }
+
+    var kind = 'unknown';
+    if (trimmed.toLowerCase().indexOf(PREFIX) === 0) kind = 'A';
+    else if (/^HGB/i.test(trimmed)) kind = 'B';
+    else if (trimmed.length === A_LEN && /^[a-z0-9]+$/i.test(trimmed)) kind = 'A';
+
+    if (kind === 'A') {
+      var code;
+      if (trimmed.toLowerCase().indexOf(PREFIX) === 0) {
+        if (trimmed.slice(0, PREFIX.length) !== PREFIX) {
+          fails.push(['前缀必须是全小写 ' + PREFIX, 'The prefix must be exactly ' + PREFIX + ' in lowercase']);
+        }
+        code = trimmed.slice(PREFIX.length);
+      } else {
+        fails.push(['缺少前缀 ' + PREFIX + '，Shopify 不会把它当作礼品卡', 'The prefix ' + PREFIX + ' is missing, so Shopify will not treat it as a gift card']);
+        code = trimmed;
+      }
+      if (code.length !== A_LEN) {
+        fails.push(['卡码应为 ' + A_LEN + ' 位，实际是 ' + code.length + ' 位', 'The code must be ' + A_LEN + ' characters, found ' + code.length]);
+      }
+      if (/[A-Z]/.test(code)) {
+        fails.push(['卡码必须全部小写', 'The code must be all lowercase']);
+      }
+      if (/[^A-Za-z0-9]/.test(code.replace(/[\s\u0000-\u001f]/g, ''))) {
+        fails.push(['卡码只能含字母和数字', 'The code may contain letters and digits only']);
+      }
+    } else if (kind === 'B') {
+      if (trimmed.length !== B_LEN) {
+        fails.push(['B 码应为 ' + B_LEN + ' 位，实际是 ' + trimmed.length + ' 位', 'The B code must be ' + B_LEN + ' characters, found ' + trimmed.length]);
+      }
+      if (/[a-z]/.test(trimmed)) {
+        fails.push(['B 码必须全部大写', 'The B code must be all uppercase']);
+      }
+      var bad = trimmed.toUpperCase().split('').filter(function (ch) { return B_SYMBOLS.indexOf(ch) < 0; });
+      if (bad.length) {
+        fails.push(['含有不允许的字符：' + bad.filter(function (c, i, a) { return a.indexOf(c) === i; }).join(' '),
+                    'Contains characters that are not allowed: ' + bad.filter(function (c, i, a) { return a.indexOf(c) === i; }).join(' ')]);
+      }
+    } else {
+      fails.push(['不是 A 码也不是 B 码（A 码应以 ' + PREFIX + ' 开头，B 码应以 HGB 开头）',
+                  'Neither an A code nor a B code (A starts with ' + PREFIX + ', B starts with HGB)']);
+    }
+    return { kind: kind, fails: fails, warns: warns, ok: fails.length === 0 };
+  }
+
+  // ── Rendering ──────────────────────────────────────────────────────────────
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function two(zh, en) { var d = document.createElement('div'); d.appendChild(el('span', 'zh', zh)); d.appendChild(el('span', 'en', en)); return d; }
+
+  function render() {
+    var box = $('results');
+    box.innerHTML = '';
+    var okA = null, okB = null;
+    order.forEach(function (raw, i) {
+      var r = analyze(raw);
+      if (r.kind === 'A') okA = okA || r.ok;
+      if (r.kind === 'B') okB = okB || r.ok;
+      var cls = r.ok ? (r.warns.length ? 'warn' : 'ok') : 'bad';
+      var card = el('div', 'result ' + cls);
+      var head = el('div');
+      var label = r.kind === 'A' ? 'A 码 / A code' : r.kind === 'B' ? 'B 码 / B code' : '未知 / Unknown';
+      head.appendChild(el('span', 'tag ' + cls, r.ok ? (r.warns.length ? '基本正确 / OK with notes' : '正确 / OK') : '有问题 / PROBLEM'));
+      head.appendChild(document.createTextNode('  #' + (i + 1) + '  ' + label));
+      card.appendChild(head);
+      card.appendChild(el('code', null, showable(raw)));
+      card.appendChild(el('div', 'muted', '字符数 / length: ' + raw.length));
+      if (r.fails.length || r.warns.length) {
+        var ul = el('ul');
+        r.fails.forEach(function (f) { var li = el('li'); li.appendChild(two('✘ ' + f[0], f[1])); ul.appendChild(li); });
+        r.warns.forEach(function (w) { var li = el('li'); li.appendChild(two('⚠ ' + w[0], w[1])); ul.appendChild(li); });
+        card.appendChild(ul);
+      }
+      box.appendChild(card);
+    });
+    setSlot('slotA', okA);
+    setSlot('slotB', okB);
+  }
+
+  function setSlot(id, ok) {
+    var s = $(id);
+    s.className = 'slot' + (ok === true ? ' ok' : ok === false ? ' bad' : '');
+    s.querySelector('.state').textContent = ok === true ? '✔ 正确 / OK' : ok === false ? '✘ 有问题 / problem' : '未扫到 / not scanned';
+  }
+
+  function add(raw) {
+    if (found[raw]) return false;
+    found[raw] = true;
+    order.push(raw);
+    return true;
+  }
+
+  // ── Decoding (several codes in one picture) ───────────────────────────────
+  function decodeAll(img) {
+    var data = new Uint8ClampedArray(img.data), w = img.width, h = img.height, out = [];
+    for (var i = 0; i < 4; i++) {
+      var r = jsQR(data, w, h, { inversionAttempts: 'attemptBoth' });
+      if (!r) break;
+      out.push(r.data);
+      var L = r.location, xs = [L.topLeftCorner.x, L.topRightCorner.x, L.bottomLeftCorner.x, L.bottomRightCorner.x];
+      var ys = [L.topLeftCorner.y, L.topRightCorner.y, L.bottomLeftCorner.y, L.bottomRightCorner.y];
+      var pad = Math.max(8, 0.12 * (Math.max.apply(null, xs) - Math.min.apply(null, xs)));
+      var x0 = Math.max(0, Math.floor(Math.min.apply(null, xs) - pad)), x1 = Math.min(w, Math.ceil(Math.max.apply(null, xs) + pad));
+      var y0 = Math.max(0, Math.floor(Math.min.apply(null, ys) - pad)), y1 = Math.min(h, Math.ceil(Math.max.apply(null, ys) + pad));
+      for (var y = y0; y < y1; y++) {
+        for (var x = x0; x < x1; x++) { var p = (y * w + x) * 4; data[p] = data[p + 1] = data[p + 2] = 255; data[p + 3] = 255; }
+      }
+    }
+    return out;
+  }
+
+  // Draws a region of a picture/video into the canvas, optionally as black-and-white, and reads every QR code in it.
+  function decodeRegion(src, sx, sy, sw, sh, maxSide, binarize) {
+    var scale = Math.min(3, maxSide / Math.max(sw, sh));
+    var w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+    var img = ctx.getImageData(0, 0, w, h);
+    if (binarize) {
+      var d = img.data, sum = 0, i, n = d.length / 4;
+      for (i = 0; i < d.length; i += 4) { var g = d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11; d[i] = d[i + 1] = d[i + 2] = g; sum += g; }
+      var thr = (sum / n) * binarize;
+      for (i = 0; i < d.length; i += 4) { var v = d[i] < thr ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; }
+    }
+    return decodeAll(img);
+  }
+
+  // ── Camera ─────────────────────────────────────────────────────────────────
+  function stopCamera() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    video.srcObject = null;
+    $('camwrap').classList.remove('on');
+    $('start').hidden = false; $('stop').hidden = true;
+  }
+
+  function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      msg('此浏览器不能使用相机，请改用“上传照片”', 'This browser cannot use the camera, please use "Upload photo"');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false })
+      .then(function (s) {
+        stream = s; video.srcObject = s; video.play();
+        $('camwrap').classList.add('on');
+        $('start').hidden = true; $('stop').hidden = false;
+        msg('请把二维码对准画面，保持稳定', 'Point the camera at a QR code and hold steady');
+        timer = setInterval(function () {
+          if (video.readyState < 2 || !video.videoWidth) return;
+          frame++;
+          var vw = video.videoWidth, vh = video.videoHeight;
+          var codes = decodeRegion(video, 0, 0, vw, vh, 900, 0);
+          if (!codes.length && frame % 2 === 0) codes = decodeRegion(video, 0, 0, vw, vh, 900, 0.8);
+          var changed = false;
+          codes.forEach(function (c) { if (add(c)) changed = true; });
+          if (changed) { render(); msg('已识别 ' + order.length + ' 个二维码', order.length + ' QR code(s) read'); }
+        }, 250);
+      })
+      .catch(function () {
+        msg('无法打开相机，请允许相机权限，或改用“上传照片”', 'Could not open the camera. Allow camera access or use "Upload photo"');
+      });
+  }
+
+  // ── Photo upload ───────────────────────────────────────────────────────────
+  // A photo of a whole card has small QR codes in it: look at the whole picture, then at overlapping parts of it.
+  function scanPhoto(img) {
+    var W = img.naturalWidth, H = img.naturalHeight, levels = [1, 0.5, 0.33];
+    for (var l = 0; l < levels.length; l++) {
+      var f = levels[l], tw = W * f, th = H * f, sx = f === 1 ? W : tw / 2, sy = f === 1 ? H : th / 2;
+      for (var y = 0; y + th <= H + 1; y += sy) {
+        for (var x = 0; x + tw <= W + 1; x += sx) {
+          [0, 0.8].forEach(function (bin) {
+            [f === 1 ? 1600 : 1000].forEach(function (side) {
+              try { decodeRegion(img, x, y, Math.min(tw, W - x), Math.min(th, H - y), side, bin).forEach(add); } catch (e) { /* ignore */ }
+            });
+          });
+        }
+      }
+      if (order.length >= 2) break;
+    }
+  }
+
+  function onFile(file) {
+    if (!file) return;
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () {
+      msg('正在识别照片，请稍候…', 'Reading the photo, please wait…');
+      setTimeout(function () {
+        scanPhoto(img);
+        URL.revokeObjectURL(url);
+        render();
+        if (order.length) msg('已识别 ' + order.length + ' 个二维码', order.length + ' QR code(s) read');
+        else msg('照片里没有读出二维码，请拍得更近、更清晰、避免反光', 'No QR code could be read from the photo. Take it closer, sharper and without glare');
+      }, 30);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); msg('无法打开这张图片', 'Could not open this image'); };
+    img.src = url;
+  }
+
+  $('start').addEventListener('click', startCamera);
+  $('stop').addEventListener('click', stopCamera);
+  $('file').addEventListener('change', function () { onFile(this.files && this.files[0]); this.value = ''; });
+  $('reset').addEventListener('click', function () { found = {}; order = []; render(); msg('', ''); });
+  render();
+})();
+</script>
+</body>
+</html>

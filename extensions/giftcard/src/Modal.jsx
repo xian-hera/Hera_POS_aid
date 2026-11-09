@@ -160,17 +160,22 @@ function Extension() {
     if (value === lastScanRef.current.value && now - lastScanRef.current.at < 1500) return;
     lastScanRef.current = { value, at: now };
 
-    if (original.toLowerCase().startsWith(REDEEM_QR_PREFIX)) {
+    const prefixAt = original.toLowerCase().indexOf(REDEEM_QR_PREFIX);
+    if (prefixAt >= 0) {
       // Redeem code scanned: only ever used to show the balance, never to sell.
-      checkBalance(original);
+      checkBalance(original.slice(prefixAt).replace(/[^A-Za-z0-9-]/g, ''));
       return;
     }
-    if (!LOOKS_LIKE_SERIAL.test(value)) {
-      setErrorMsg('This is not a Hera gift card activation code.');
+    // Tolerate scanner noise around the serial (control characters, symbology identifiers, spaces).
+    const found = value.match(/HGB[A-Z0-9]{14}/);
+    if (!found) {
+      // Show what the scanner actually delivered, to make bad printed codes easy to diagnose.
+      const shown = JSON.stringify(original.slice(0, 40)) + (original.length > 40 ? '…' : '');
+      setErrorMsg(`This is not a Hera gift card activation code. Scanned (${original.length} chars): ${shown}`);
       go('error');
       return;
     }
-    checkCard(value);
+    checkCard(found[0]);
   };
 
   useEffect(() => {

@@ -787,6 +787,7 @@ app.get(["/proxy", "/proxy/wallet"], (req, res) => {
 // GET  /proxy/giftcard-balance/app.js     page script (English / French)
 // GET  /proxy/giftcard-balance/jsqr.js    QR decoder used only when the customer taps "Scan"
 // POST /proxy/giftcard-balance/lookup     { code } -> { found, balance, currency, ... }
+// GET  /proxy/qr-check                    factory self-check page for printed QR codes (see below)
 
 function readStorefrontFile(...parts) {
   try {
@@ -845,6 +846,14 @@ app.get("/proxy/giftcard-balance/img/:name", (req, res) => {
 app.get("/proxy/giftcard-balance/jsqr.js", (req, res) => {
   if (!gcbJsQr) return res.status(503).end();
   res.set("Cache-Control", "public, max-age=86400").type("application/javascript").send(gcbJsQr);
+});
+
+// Self-check page for the card factory (storefront /apps/hera/qr-check): scan a sample card with a phone and see exactly
+// what each QR code contains. Pure browser-side checks, no secrets, nothing is sent to the server.
+const qrCheckPage = readStorefrontFile("qr-check.html");
+app.get("/proxy/qr-check", proxyGuard, (req, res) => {
+  if (!qrCheckPage) return res.status(503).send("Temporarily unavailable");
+  res.set("X-Robots-Tag", "noindex, nofollow").type("text/html").send(qrCheckPage); // plain HTML: rendered as is, not inside the theme
 });
 
 app.post(
