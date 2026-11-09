@@ -23,7 +23,7 @@ export const REDEEM_QR_PREFIX = "shopify-giftcard-v1-"; // what Shopify POS reco
 const SYMBOLS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const SERIAL_BODY_LENGTH = 10;
 const SERIAL_TAG_LENGTH = 4;
-const REDEEM_CODE_LENGTH = 16; // Shopify accepts 8-20 letters/digits, case-insensitive
+const REDEEM_CODE_LENGTH = 12; // Shopify accepts 8-20 letters/digits, case-insensitive
 
 const SERIAL_RE = new RegExp(
   `^${SERIAL_PREFIX}([${SYMBOLS}]{${SERIAL_BODY_LENGTH}})([${SYMBOLS}]{${SERIAL_TAG_LENGTH}})$`
@@ -73,7 +73,7 @@ export function parseSerial(secret, raw) {
   return safeEqual(serialTag(secret, m[1]), m[2]) ? s : null;
 }
 
-/** The redeem code A (16 lowercase letters/digits) that belongs to serial B. */
+/** The redeem code A (12 lowercase letters/digits) that belongs to serial B. */
 export function redeemCodeFor(secret, serial) {
   requireSecret(secret);
   return toSymbols(hmac(secret, "hera-gc-redeem-code", serial), REDEEM_CODE_LENGTH).toLowerCase();

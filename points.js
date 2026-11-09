@@ -142,63 +142,62 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, smileA
     return c ? Math.max(0, parseInt(c.points_balance ?? 0, 10) || 0) : 0; // not in Smile yet = 0
   }
 
-  // ── Temporary test (runs once at start-up, only when the Render variables are set) ──
-  // Question: can Smile's public API find a customer from the Shopify customer ID (customers with
-  // a phone number but no email)? Set SMILE_PROBE_SMILE_ID (the number in "View in Smile", e.g.
-  // 3619048508) and SMILE_PROBE_SHOPIFY_ID (the same customer's Shopify ID). The log shows only
-  // field names, HTTP statuses, counts and yes/no matches: no names, emails or phone numbers.
-  // Remove both variables afterwards.
+  // ── Temporary test 2 (runs once at start-up, only when the Render variables are set) ──
+  // Smile's API cannot search by Shopify ID. Test: can a phone-only Shopify customer be matched to
+  // their Smile customer by first name + last name + creation time (Smile creates its customer when
+  // Shopify does)? Set SMILE_PROBE_SMILE_ID (the number in "View in Smile") and SMILE_PROBE_SHOPIFY_ID
+  // (the same customer's Shopify ID). The log shows only yes/no, counts and time differences:
+  // no names, emails or phone numbers. Remove both variables afterwards.
   async function smileProbe() {
     const smileId = String(process.env.SMILE_PROBE_SMILE_ID || "").trim();
     const shopifyId = String(process.env.SMILE_PROBE_SHOPIFY_ID || "").trim();
-    if (!smileId && !shopifyId) return;
-    if ((smileId && !isNumericId(smileId)) || (shopifyId && !isNumericId(shopifyId))) {
-      return console.warn("[smile-probe] the probe IDs must be numbers");
-    }
+    if (!smileId || !shopifyId) return;
+    if (!isNumericId(smileId) || !isNumericId(shopifyId)) return console.warn("[smile-probe] the probe IDs must be numbers");
     const get = async (path) => {
-      try {
-        const r = await fetch(`https://api.smile.io/v1/${path}`, {
-          headers: { Authorization: `Bearer ${smileApiKey}` },
-          signal: AbortSignal.timeout(8000),
-        });
-        let body = null;
-        try { body = await r.json(); } catch { /* not JSON */ }
-        return { status: r.status, body };
-      } catch (e) {
-        return { status: `error ${e.message}`, body: null };
-      }
+      const r = await fetch(`https://api.smile.io/v1/${path}`, {
+        headers: { Authorization: `Bearer ${smileApiKey}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      let body = null;
+      try { body = await r.json(); } catch { /* not JSON */ }
+      return { status: r.status, body };
     };
-    const has = (v) => shopifyId && JSON.stringify(v ?? "").includes(shopifyId);
-    console.log(`[smile-probe] start (smile id ${smileId ? "set" : "-"}, shopify id ${shopifyId ? "set" : "-"})`);
+    const norm = (v) => String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+    const secs = (a, b) => Math.round(Math.abs(new Date(a) - new Date(b)) / 1000);
+    try {
+      const shop = (await graphql(
+        `query ProbeCustomer($id: ID!) { customer(id: $id) { firstName lastName createdAt } }`,
+        { id: gid("Customer", shopifyId) }
+      )).customer;
+      if (!shop) return console.warn("[smile-probe] Shopify customer not found");
+      const one = await get(`customers/${smileId}`);
+      const sc = one.body?.customer || {};
+      console.log(`[smile-probe] Smile customer → ${one.status} · same first name: ${norm(sc.first_name) === norm(shop.firstName) ? "yes" : "no"} · same last name: ${norm(sc.last_name) === norm(shop.lastName) ? "yes" : "no"} · created ${secs(sc.created_at, shop.createdAt)} s apart · Smile email: ${sc.email ? "yes" : "empty"}`);
 
-    if (smileId) {
-      const r = await get(`customers/${smileId}`);
-      const c = r.body?.customer || r.body;
-      console.log(`[smile-probe] GET customers/{smileId} → ${r.status} · fields: ${c && typeof c === "object" ? Object.keys(c).join(", ") : "-"}`);
-      if (c && typeof c === "object") {
-        for (const [k, v] of Object.entries(c)) {
-          if (v && typeof v === "object") console.log(`[smile-probe]   ${k} → fields: ${Object.keys(v).join(", ")}`);
-          if (has(v)) console.log(`[smile-probe]   field "${k}" CONTAINS the Shopify ID`);
+      // Scan every Smile customer once: how many would match this Shopify customer?
+      const started = Date.now();
+      let cursor = "";
+      let total = 0, noEmail = 0, pages = 0;
+      const candidates = [];
+      for (; pages < 400; pages++) {
+        const r = await get(`customers?limit=250${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        if (r.status !== 200) { console.warn(`[smile-probe] list page ${pages + 1} → ${r.status}`); break; }
+        const list = r.body?.customers || [];
+        for (const c of list) {
+          total++;
+          if (!c.email) noEmail++;
+          if (norm(c.first_name) === norm(shop.firstName) && norm(c.last_name) === norm(shop.lastName)) {
+            candidates.push({ id: String(c.id), apart: secs(c.created_at, shop.createdAt) });
+          }
         }
-        console.log(`[smile-probe]   points_balance present: ${c.points_balance !== undefined ? "yes" : "no"}`);
+        cursor = r.body?.metadata?.next_cursor || r.body?.next_cursor || "";
+        if (!cursor || !list.length) break;
       }
-      for (const path of [`customers/${smileId}/customer_identities`, `customer_identities?customer_id=${smileId}`]) {
-        const x = await get(path);
-        console.log(`[smile-probe] GET ${path.replace(smileId, "{smileId}")} → ${x.status} · keys: ${x.body ? Object.keys(x.body).join(", ") : "-"} · contains Shopify ID: ${has(x.body) ? "YES" : "no"}`);
-      }
-    }
-
-    if (shopifyId) {
-      for (const param of ["external_id", "shopify_customer_id", "shopify_id", "origin_id", "external_customer_id"]) {
-        const x = await get(`customers?${param}=${shopifyId}`);
-        const list = x.body?.customers || [];
-        const match = smileId ? list.some((c) => String(c.id) === smileId) : null;
-        console.log(`[smile-probe] GET customers?${param}={shopifyId} → ${x.status} · ${list.length} customer(s)${match === null ? "" : ` · expected customer among them: ${match ? "YES" : "no"}`}`);
-      }
-      for (const path of [`customer_identities?external_id=${shopifyId}`, `customer_identities?identity=${shopifyId}`]) {
-        const x = await get(path);
-        console.log(`[smile-probe] GET ${path.replace(shopifyId, "{shopifyId}")} → ${x.status} · keys: ${x.body ? Object.keys(x.body).join(", ") : "-"} · contains Shopify ID: ${has(x.body) ? "YES" : "no"}`);
-      }
+      console.log(`[smile-probe] scanned ${total} Smile customers (${noEmail} without email) in ${pages + 1} page(s), ${Math.round((Date.now() - started) / 1000)} s`);
+      console.log(`[smile-probe] same name: ${candidates.length} · within 10 min of the Shopify creation: ${candidates.filter((c) => c.apart <= 600).length} · the right one among them: ${candidates.some((c) => c.id === smileId && c.apart <= 600) ? "YES" : "no"}`);
+      for (const c of candidates.slice(0, 5)) console.log(`[smile-probe]   candidate ${c.id === smileId ? "(the right one)" : "(another)"} created ${c.apart} s apart`);
+    } catch (err) {
+      console.error(`[smile-probe] failed: ${err.message}`);
     }
     console.log("[smile-probe] done: remove SMILE_PROBE_SMILE_ID and SMILE_PROBE_SHOPIFY_ID from Render");
   }
