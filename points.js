@@ -108,6 +108,7 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, hp }) 
   // One request at a time per customer, newest cart wins (two iPads, quick cart changes).
   const chains = new Map();
   const latestSeq = new Map();
+  const lastEstimate = new Map(); // customerId → { sig (items of the cart), paid, at }
   function perCustomer(customerId, fn) {
     const prev = chains.get(customerId) || Promise.resolve();
     const run = prev.then(fn, fn);
@@ -139,20 +140,25 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, hp }) 
         const grand = parseMoney(b.grandTotal);
         const tax = parseMoney(b.taxTotal) ?? 0;
         if (grand === null) throw new Error(`unreadable total "${String(b.grandTotal).slice(0, 20)}"`);
-        let paid = Math.max(0, grand - tax);
-        // When a payment is applied (store credit, gift card, split payment…), POS reports the amount
-        // still due as the cart total: it can drop to 0 (even below the tax) although the items are
-        // unchanged. The cart subtotal (before tax) stays right, so use it then.
+        const paid = Math.max(0, grand - tax);
+        // When a payment is taken (store credit, cash, card…), POS reports the amount still due as the
+        // cart total: it drops to 0 (below the tax) although the items are unchanged. The cart
+        // "subtotal" can't be used instead (it is before some discounts: 3.99 for a 3.60 sale).
+        // So keep the estimate written for these same items; if there is none, clear it.
         const gross = lines.reduce((a, l) => a + l.price * l.quantity, 0);
         const allocated = lines.reduce((a, l) => a + l.allocations.reduce((x, y) => x + y, 0), 0);
-        const sub = parseMoney(b.subtotal);
+        const sig = JSON.stringify(lines);
         const paymentApplied = grand + 0.005 < tax || (paid < 0.005 && gross >= 0.01 && allocated < 0.005);
         if (paymentApplied) {
-          if (sub === null || sub <= 0 || sub > gross + 0.005) {
-            console.log(`[points] customer ${customerId}: payment applied, no usable subtotal, estimate kept · grand ${String(b.grandTotal).slice(0, 20)} · tax ${String(b.taxTotal).slice(0, 20)} · subtotal ${String(b.subtotal).slice(0, 20)}`);
+          const last = lastEstimate.get(customerId);
+          if (last && last.sig === sig) {
+            console.log(`[points] customer ${customerId}: payment in progress, estimate for these items kept (paid before tax ${last.paid})`);
             return { skipped: "payment in progress" };
           }
-          paid = sub;
+          console.log(`[points] customer ${customerId}: payment in progress but no estimate for these items, receipt points cleared · grand ${String(b.grandTotal).slice(0, 20)} · tax ${String(b.taxTotal).slice(0, 20)} · subtotal ${String(b.subtotal).slice(0, 20)}`);
+          lastEstimate.delete(customerId);
+          await writeReceipt(customerId, NO_ESTIMATE);
+          return { skipped: "payment in progress, no estimate" };
         }
         const discounts = lineDiscounts(lines, paid);
 
@@ -172,9 +178,10 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, hp }) 
           subtotal: cents(paid), paid: paid.toFixed(2), paidNum: paid.toFixed(2),
         };
         await writeReceipt(customerId, values);
+        lastEstimate.set(customerId, { sig, paid: values.paid, at: Date.now() });
         console.log(
           `[points] customer ${customerId}: ${before} + ${est.points} = ${before + est.points} ` +
-          `(paid before tax ${paid.toFixed(2)}${paymentApplied ? " from subtotal, payment applied" : ""}, eligible ${est.eligibleAmount.toFixed(2)}, ${hcLines.length}/${lines.length} lines sent) at location ${b.locationId ?? "?"}`
+          `(paid before tax ${paid.toFixed(2)}, eligible ${est.eligibleAmount.toFixed(2)}, ${hcLines.length}/${lines.length} lines sent) at location ${b.locationId ?? "?"}`
         );
         return values;
       });
