@@ -140,6 +140,14 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, hp }) 
         const tax = parseMoney(b.taxTotal) ?? 0;
         if (grand === null) throw new Error(`unreadable total "${String(b.grandTotal).slice(0, 20)}"`);
         const paid = Math.max(0, grand - tax);
+        // While the payment is being taken, POS reports the amount still due as the cart total: it
+        // drops to 0 although the items and discounts are unchanged. Keep the estimate already written.
+        const gross = lines.reduce((a, l) => a + l.price * l.quantity, 0);
+        const allocated = lines.reduce((a, l) => a + l.allocations.reduce((x, y) => x + y, 0), 0);
+        if (paid < 0.005 && gross >= 0.01 && allocated < 0.005) {
+          console.log(`[points] customer ${customerId}: cart total 0 without discount (payment in progress), estimate kept · grand ${String(b.grandTotal).slice(0, 20)} · tax ${String(b.taxTotal).slice(0, 20)} · subtotal ${String(b.subtotal).slice(0, 20)}`);
+          return { skipped: "payment in progress" };
+        }
         const discounts = lineDiscounts(lines, paid);
 
         // Custom sales (no variant) are not sent: Hera Points needs a product variant.
