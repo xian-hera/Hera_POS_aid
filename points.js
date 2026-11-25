@@ -139,14 +139,20 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, hp }) 
         const grand = parseMoney(b.grandTotal);
         const tax = parseMoney(b.taxTotal) ?? 0;
         if (grand === null) throw new Error(`unreadable total "${String(b.grandTotal).slice(0, 20)}"`);
-        const paid = Math.max(0, grand - tax);
-        // While the payment is being taken, POS reports the amount still due as the cart total: it
-        // drops to 0 although the items and discounts are unchanged. Keep the estimate already written.
+        let paid = Math.max(0, grand - tax);
+        // When a payment is applied (store credit, gift card, split payment…), POS reports the amount
+        // still due as the cart total: it can drop to 0 (even below the tax) although the items are
+        // unchanged. The cart subtotal (before tax) stays right, so use it then.
         const gross = lines.reduce((a, l) => a + l.price * l.quantity, 0);
         const allocated = lines.reduce((a, l) => a + l.allocations.reduce((x, y) => x + y, 0), 0);
-        if (paid < 0.005 && gross >= 0.01 && allocated < 0.005) {
-          console.log(`[points] customer ${customerId}: cart total 0 without discount (payment in progress), estimate kept · grand ${String(b.grandTotal).slice(0, 20)} · tax ${String(b.taxTotal).slice(0, 20)} · subtotal ${String(b.subtotal).slice(0, 20)}`);
-          return { skipped: "payment in progress" };
+        const sub = parseMoney(b.subtotal);
+        const paymentApplied = grand + 0.005 < tax || (paid < 0.005 && gross >= 0.01 && allocated < 0.005);
+        if (paymentApplied) {
+          if (sub === null || sub <= 0 || sub > gross + 0.005) {
+            console.log(`[points] customer ${customerId}: payment applied, no usable subtotal, estimate kept · grand ${String(b.grandTotal).slice(0, 20)} · tax ${String(b.taxTotal).slice(0, 20)} · subtotal ${String(b.subtotal).slice(0, 20)}`);
+            return { skipped: "payment in progress" };
+          }
+          paid = sub;
         }
         const discounts = lineDiscounts(lines, paid);
 
@@ -168,7 +174,7 @@ export function registerPoints(app, { graphql, requirePosAuth, rateLimit, hp }) 
         await writeReceipt(customerId, values);
         console.log(
           `[points] customer ${customerId}: ${before} + ${est.points} = ${before + est.points} ` +
-          `(paid before tax ${paid.toFixed(2)}, eligible ${est.eligibleAmount.toFixed(2)}, ${hcLines.length}/${lines.length} lines sent) at location ${b.locationId ?? "?"}`
+          `(paid before tax ${paid.toFixed(2)}${paymentApplied ? " from subtotal, payment applied" : ""}, eligible ${est.eligibleAmount.toFixed(2)}, ${hcLines.length}/${lines.length} lines sent) at location ${b.locationId ?? "?"}`
         );
         return values;
       });
