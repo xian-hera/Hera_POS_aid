@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.js",
     "deploy": "shopify app deploy",
-    "giftcards": "node tools/generate-giftcards.js"
+    "giftcards": "node tools/generate-giftcards.js",
+    "verifygiftcards": "node tools/verify-giftcards.js"
   },
   "dependencies": {
     "express": "^4.18.2",

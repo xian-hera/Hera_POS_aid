@@ -22,7 +22,8 @@ Hera_POS_aid/
    ├─ giftcard/            POS tile "Gift Card Sale"
    ├─ restock/             POS tile "Restock Notify" (backend: restock.js)
    ├─ memo/                POS tile "MEMO" (backend: memo.js)
-   └─ points-sync/         Background extension (no tile): sends the cart for the receipt points (backend: points.js)
+   ├─ points-sync/         Background extension (no tile): sends the cart for the receipt points (backend: points.js) — paused
+   └─ demo-wig/            Cart item menu button "Demo Wig -10%": 10% off one unit of a WIG product
                            (add future POS tiles as new folders here)
 ```
 
@@ -37,13 +38,15 @@ Hera_POS_aid/
 | `POST /api/giftcard/balance` | POS "Gift Card Sale" tile | Cashier scans the redeem QR (under the sticker) and reads the balance. POS session token required. Returns the last 4 characters only. |
 | `POST /api/restock/customer`, `/contact`, `/subscribe`, `/search`, `/submit` | POS "Restock Notify" tile | Customer details and consent, add or change the email / phone, save the confirmed language, variant search fallback, save the request. POS session token always required. |
 | `POST /api/memo/list`, `/save`, `/delete`, `/unlock` | POS "MEMO" tile | Store memos and Global memos (metaobject `pos_memo`). Global changes need an unlock token (30 min) obtained with `MEMO_PASSWORD`. POS session token always required. |
-| `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Smile balance, estimates this sale's points and writes `custom.receipt_points_*` for the receipt. POS session token always required. |
+| `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Hera Points balance, asks Hera Points to estimate this sale's points and writes `custom.receipt_points_*` for the receipt (Hera Points customers only). POS session token always required. |
+| `POST /flow/points-changed` | Shopify Flow "Hera Points: points changed" | Refreshes the customer's Apple Wallet card (APNs push). Header `X-Hera-Flow-Secret` = `FLOW_SHARED_SECRET`. Pending points: no push. Several changes within 30 s give one push. |
+| `GET /wallet-push` | Head office, switch day only | Sends one update to every Wallet card of the Hera Points customers (password `REPORT_PASSWORD`). |
 | `POST /api/unit/status`, `/api/unit/answer` | Thank you / Order status page block "unit-check" | Should the block ask for the unit number; save the customer's answer (unit → shipping address line 2, or "no unit"). Checkout session token + the order's confirmation number required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
 | `POST /proxy/giftcard-balance/lookup` | The page above | Takes a code (typed or scanned) and returns the balance. App Proxy signature required, rate-limited (10/min per IP, 300/min in total). |
 | `/v1/devices/...`, `/v1/passes/...`, `/v1/log` | Apple Wallet | Apple Wallet web service: registration, updates, error logs. |
-| `POST /webhooks/orders` | Shopify `orders/paid` | Syncs Smile.io points into `custom.points_balance` and pushes a card update to every registered device. It also activates physical gift cards sold at POS (see Gift cards below). |
+| `POST /webhooks/orders` | Shopify `orders/paid` | Smile customers only: syncs Smile.io points into `custom.points_balance` and pushes a card update to every registered device. It also activates physical gift cards sold at POS (see Gift cards below). |
 | `GET /wallet/email/:email`, `/wallet/:id`, `/api/pass/generate/:id` | Legacy | Old unauthenticated links. Turned off with `LEGACY_WALLET_LINKS=off`. |
 | `/auth`, `/auth/callback` | Re-install only | OAuth. The token is shown once in the browser and never logged. |
 
@@ -67,7 +70,11 @@ once and then migrated automatically.
 | `REPORT_PASSWORD` | Password of the head-office report page `/report` (10+ characters). Changing it signs everybody out. |
 | `MEMO_PASSWORD` | Password that unlocks editing of Global memos in the MEMO tile for 30 minutes on that iPad (6+ characters). Changing it locks every iPad again. Global editing is off when it is missing. |
 | `MEMO_ADMIN_PASSWORD` | Optional. Password of the MEMO head-office page `/memo` (10+ characters). When missing, `REPORT_PASSWORD` is used. |
-| `POINTS_MULTIPLIER` | Optional. Points campaign multiplier for the receipt estimate (e.g. `2`). Default `1`. |
+| `HERA_CONNECT_API_URL` | Hera Points address: `https://hera-points-web.onrender.com` (no trailing slash). |
+| `HERA_CONNECT_API_KEY` | Hera Points API key `hp_…` (permissions points:read, estimate). |
+| `FLOW_SHARED_SECRET` | 32+ random characters (64 hex recommended). Same value in the Flow's `X-Hera-Flow-Secret` header. `/flow/points-changed` answers 503 when missing. |
+| `POINTS_SOURCE` | `smile` (default) or `hc` (switch day). |
+| `HC_TEST_CUSTOMER_IDS` | Optional. Shopify customer IDs (comma separated) that already use Hera Points while `POINTS_SOURCE=smile`. |
 | `POS_AUTH_MODE` | `log` (default) or `enforce`. Use `log` first, then switch to `enforce` once the logs show `[pos-auth] ok` for real scans. |
 | `LEGACY_WALLET_LINKS` | `on` (default) or `off`. Set to `off` once Klaviyo uses `/apps/hera/wallet`. |
 | `SHOPIFY_API_VERSION` | Optional. Default `2026-07`. |
@@ -103,7 +110,9 @@ npm install
 GIFT_SECRET=... npm run giftcards -- 50
 ```
 
-This writes `giftcards-output/<timestamp>/` with `cards.csv`, QR PNGs (error correction Q) and `preview.html`.
+Each card has four printed items: A redeem QR (`shopify-giftcard-v1-` + 12 characters, under the sticker), B the same 12 characters as text (under the sticker), C sale QR (the 17-character serial `HGB...`, outside the sticker) and D the last 5 characters of the serial (outside the sticker). The script writes `giftcards-output/<timestamp>/cards.csv` (columns `no`, `A_redeem_qr_content`, `B_redeem_text`, `C_sale_qr_content`, `D_serial_text`). QR PNGs (error correction Q) and `preview.html` are made for up to 500 cards, or when `--images` is added. Before writing anything the script checks every card (A and B belong to C, nothing repeated, no text that Excel could turn into a number such as `4E567`); it also prints the SHA-256 of `cards.csv`. Generate a print batch once and keep that folder: running it again gives different codes.
+
+To check a `cards.csv` (the original, or a copy that came back from a spreadsheet program): `GIFT_SECRET=... npm run verifygiftcards -- path/to/cards.csv`. It re-derives every code from the secret and reports any row that was changed.
 
 Needs the `read_gift_cards,write_gift_cards` scopes: after `shopify app deploy`, approve them in the Shopify admin and re-run `/auth` to get a new `SHOP_ACCESS_TOKEN`.
 
@@ -211,21 +220,52 @@ Tile "MEMO": quick lookup of important info. Code: `extensions/memo/` and `memo.
 - If two iPads edit the same memo, the second save is refused and the cashier can reopen their text.
 - During tests the tile subheading is `debug N`; final text: "Quick lookup of important info".
 
+## Hera Points (replaces Smile)
+
+Code: `herapoints.js` (API client), `points.js` (receipt), `wallet-push.js` (switch day), Flow route in `server.js`.
+Customers are identified by their Shopify customer ID, so customers without email work too.
+"Hera Points customers" = everybody when `POINTS_SOURCE=hc`; before that only `HC_TEST_CUSTOMER_IDS`.
+
+- **Wallet card and Login tile**: the balance comes from Hera Points (`GET /api/v1/customers/{id}`). If Hera Points
+  can't be reached, the last `custom.points_balance` is shown. Hera Points customers are skipped by the Smile sync.
+- **Wallet refresh**: Flow "Hera Points: points changed" → Send HTTP request `POST https://search-0wf4.onrender.com/flow/points-changed`,
+  header `X-Hera-Flow-Secret` (store the value as a Flow secret), body
+  `{"customerId": …, "newBalance": …, "isPending": …}`. While testing, add a Flow condition on the test customer.
+- **Switch day**: import in Hera Points → set `POINTS_SOURCE=hc` → open `/wallet-push` once and press Start
+  (cards would otherwise keep the old Smile number until the customer's next points change).
+  Then delete `syncSmilePoints`, `SMILE_API_KEY` and the Smile Flow.
+
 ## Points on the receipt (POS)
 
 Goal: the printed receipt shows the customer's points **including this sale**. Code: `extensions/points-sync/`
-(background, API 2026-07, no tile) and `points.js`.
+(background, no tile; must be activated in the POS editor → Apps) and `points.js`.
 
 1. When the cart has a customer and items and stops changing for 1.2 s, the extension sends it to `/api/points/preview`.
-2. The backend reads the Smile balance (by email), estimates the sale's points and writes 4 customer metafields
-   (definitions created automatically at start-up): `custom.receipt_points_before`, `_earned`, `_total`,
-   `_subtotal` (pre-tax amount in cents; `-1` = no estimate).
-3. The receipt's custom Liquid block prints `receipt_points_total` when `receipt_points_subtotal` equals the
-   order's subtotal, otherwise `custom.points_balance`, plus a note that the official balance is on the website.
+2. For Hera Points customers the backend reads the balance and asks Hera Points `POST /api/v1/estimate`
+   (unit price, quantity and discount total of each line; custom sales without a variant are not sent), then writes
+   customer metafields (definitions created automatically at start-up): `custom.receipt_points_before`, `_earned`,
+   `_total`, `_subtotal` (pre-tax cents, `-1` = no estimate), `_paid` (text, e.g. `18.98`), `_paid_num` (decimal).
+   Other customers are skipped.
+3. The receipt's custom Liquid block prints `receipt_points_total` when `receipt_points_paid` equals
+   `{{ order.subtotal_price }}`.
 
-Rules (Smile, Nov 2026): 1 point per $1 paid before tax, rounded down; products with a compare-at price and gift
-cards earn nothing. Order-level discounts are shared between lines in proportion to their amounts.
-Campaigns: set `POINTS_MULTIPLIER`. `custom.points_balance` (Apple Wallet) is not touched by this feature.
+All earning rules (no tax, compare-at prices, gift cards, campaigns, rounding up) are applied by Hera Points.
+`custom.points_balance` is not touched by this feature.
+
+## Demo Wig Discount (POS)
+
+Code: `extensions/demo-wig/` (API 2026-10, target `pos.cart.line-item-details.action.menu-item.render`). No backend.
+Activate it in Shopify admin → Point of Sale → Edit Point of Sale → Apps → Hera_POS_aid.
+
+- In the cart, tap a product whose **Product type is WIG** (any case): the menu shows **Demo Wig -10%**
+  (POS uses the extension description as the label, so it cannot change).
+- Demo Wig = 10% off **one unit**. Quantity 1: a 10% item discount. Quantity 2+: a fixed amount per unit whose
+  total equals 10% of one unit (POS item discounts always cover the whole line). Re-apply if the quantity changes.
+- A manual item discount already on the line is combined with it into one discount with the same effect
+  (20% then 10% = 28%), titled "Demo Wig -10% + <old title>". Order discounts stack normally.
+- Tapping the same button on a line that has Demo Wig (hidden property `_demo_wig`) cancels it and puts the previous
+  item discount back. A toast says "applied" or "cancelled".
+- While testing, it logs short lines `[pos-ui] demo-wig …` (set `DEBUG = false` in `src/MenuItem.jsx` afterwards).
 
 ## Unit number check (online orders)
 

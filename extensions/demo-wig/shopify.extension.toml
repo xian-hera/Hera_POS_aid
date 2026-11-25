@@ -1,0 +1,14 @@
+api_version = "2026-10"
+
+[[extensions]]
+type = "ui_extension"
+name = "Demo Wig Discount"
+# `uid` is added automatically by `shopify app deploy` the first time
+handle = "demo-wig"
+uid = "2bb8d569-59b8-d6bc-396a-f506a0e9d653ba1a9028"
+# POS shows this description as the menu button label (it cannot change while POS runs)
+description = "Demo Wig -10%"
+
+[[extensions.targeting]]
+module = "./src/MenuItem.jsx"
+target = "pos.cart.line-item-details.action.menu-item.render"

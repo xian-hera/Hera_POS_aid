@@ -1,6 +1,6 @@
 // Hera_POS_aid backend
 // - Apple Wallet loyalty card (generate, Apple Wallet web service, push updates)
-// - Smile.io points sync on orders/paid
+// - Points: Smile.io sync on orders/paid, or Hera Points (herapoints.js, Flow → /flow/points-changed)
 // - /api/verify for the POS "Customer Login" tile
 // - Physical gift cards: /api/giftcard/status for the POS "Gift Card Sale" tile + activation on orders/paid
 // - Shopify App Proxy page for the storefront "Add to Apple Wallet" button
@@ -23,6 +23,8 @@ import { registerReport } from "./report.js";
 import { registerMemo } from "./memo.js";
 import { registerMemoAdmin } from "./memo-admin.js";
 import { registerPoints } from "./points.js";
+import { createHeraPoints, normId } from "./herapoints.js";
+import { registerWalletPush } from "./wallet-push.js";
 import { registerAddressCheck } from "./address.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -208,6 +210,22 @@ const METAFIELDS_DELETE = `
   }
 `;
 
+// ─── Points balance shown on the Wallet card and the Login tile ──────────────
+// Hera Points (HC) for its customers (all once POINTS_SOURCE=hc, before that only HC_TEST_CUSTOMER_IDS);
+// the others keep the Smile copy in custom.points_balance. If Hera Points can't be reached,
+// the last known custom.points_balance is shown instead (never an error on the card).
+const hp = createHeraPoints();
+
+async function pointsFor(customer) {
+  if (!hp.usesHC(customer.id)) return customer.points;
+  try {
+    return String(await hp.getBalance(customer.id));
+  } catch (err) {
+    console.error(`[hc] balance for customer ${customer.id} unavailable (${err.message}); showing custom.points_balance`);
+    return customer.points;
+  }
+}
+
 async function setCustomerMetafield(customerId, key, value, type) {
   const data = await shopifyGraphQL(METAFIELDS_SET, {
     metafields: [{ ownerId: customerGid(customerId), namespace: "custom", key, type, value: String(value) }],
@@ -292,7 +310,7 @@ async function generatePassBuffer(customerId) {
     messageEncoding: "iso-8859-1",
   });
 
-  pass.primaryFields.push({ key: "points", label: "Points", value: customer.points });
+  pass.primaryFields.push({ key: "points", label: "Points", value: await pointsFor(customer) });
   pass.secondaryFields.push({
     key: "name",
     label: "Member",
@@ -379,16 +397,6 @@ app.use("/api/unit", (req, res, next) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
-
-// ─── Diagnostics for the background extension "points-sync" (temporary) ───────
-// Logs every request to its two routes, including the CORS preflight (OPTIONS) and the Origin
-// header, so we can tell "the extension never ran" from "it ran but the browser blocked the call".
-app.use(["/api/points", "/api/pos/clientlog"], (req, res, next) => {
-  if (req.method === "OPTIONS" || req.path.startsWith("/api/points") || req.baseUrl === "/api/points" || req.body?.tile === "points") {
-    console.log(`[points-diag] ${req.method} ${req.originalUrl} · origin ${req.headers.origin || "none"} · auth ${req.headers.authorization ? "yes" : "no"}`);
-  }
   next();
 });
 
@@ -522,7 +530,7 @@ app.post(
         lastName: customer.lastName,
         email: customer.email,
         phone: customer.phone,
-        loyaltyPoints: customer.points,
+        loyaltyPoints: await pointsFor(customer),
       });
     } catch (err) {
       console.error("Customer lookup failed:", err.message);
@@ -666,8 +674,7 @@ registerPoints(app, {
   graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 15000, attempts: 2 }),
   requirePosAuth: requirePosAuthStrict,
   rateLimit,
-  smileApiKey: SMILE_API_KEY,
-  giftProductId: GIFT_PRODUCT_ID,
+  hp,
 });
 
 // ─── Unit number check for online orders (address.js) ────────────────────────
@@ -1089,6 +1096,8 @@ app.post("/webhooks/orders", async (req, res) => {
 
   if (!shopifyCustomerId) return;
 
+  // Hera Points customers: their Wallet card is refreshed by the Hera Points Flow (/flow/points-changed).
+  if (hp.usesHC(shopifyCustomerId)) return;
   syncSmilePoints(shopifyCustomerId).catch((err) => console.error("Smile sync error:", err.message));
 });
 
@@ -1115,14 +1124,25 @@ async function syncSmilePoints(customerId) {
   await setCustomerMetafield(customerId, "points_balance", pointsBalance, "number_integer");
   console.log(`Updated points_balance to ${pointsBalance} for customer ${customerId}`);
 
-  if (!customer.devices.length) return console.log(`No Wallet device for customer ${customerId}, skipping push`);
+  await pushToDevices(customer);
+}
 
+// Push "your pass changed" to every device of the customer; Apple then downloads the new card
+// (/v1/devices/… then /v1/passes/…). Dead devices are removed. Returns the number of pushes sent.
+async function pushToDevices(customer) {
+  const customerId = customer.id;
+  if (!customer.devices.length) {
+    console.log(`No Wallet device for customer ${customerId}, skipping push`);
+    return 0;
+  }
+  let sent = 0;
   const stillValid = [];
   for (const device of customer.devices) {
     if (device.deviceId) deviceToCustomer.set(device.deviceId, customerId);
     const result = await sendPassUpdatePush(device.pushToken);
     if (result.ok) {
       console.log(`Pass update push sent for customer ${customerId}`);
+      sent++;
       stillValid.push(device);
     } else if (result.status === 410 || ["BadDeviceToken", "Unregistered"].includes(result.reason)) {
       console.log(`Removing dead device for customer ${customerId} (${result.reason || result.status})`);
@@ -1135,7 +1155,69 @@ async function syncSmilePoints(customerId) {
   if (stillValid.length !== customer.devices.length || customer.hasLegacyFields) {
     await saveDevices(customer, stillValid);
   }
+  return sent;
 }
+
+// ─── Hera Points Flow → refresh the Wallet card ───────────────────────────────
+// Shopify Flow "Hera Points: points changed" → Send HTTP request:
+//   POST ${PUBLIC_URL}/flow/points-changed
+//   header X-Hera-Flow-Secret: FLOW_SHARED_SECRET (Render env, same value in the Flow)
+//   body {"customerId": …, "newBalance": …, "isPending": …}
+// We answer at once and push in the background. Several changes for the same customer within
+// 30 s give one push at the end (Apple reads the newest balance from Hera Points anyway).
+// Pending points (isPending) don't change the card: no push. custom.points_balance is not written.
+
+const FLOW_SECRET = String(process.env.FLOW_SHARED_SECRET || "");
+const FLOW_DEBOUNCE_MS = 30 * 1000;
+const flowLastPush = new Map(); // customerId → time of the last push
+const flowTimers = new Map();   // customerId → pending (delayed) push
+
+function flowPush(customerId) {
+  flowLastPush.set(customerId, Date.now());
+  fetchCustomer(customerId)
+    .then((customer) => (customer ? pushToDevices(customer) : console.log(`[flow] customer ${customerId} not found`)))
+    .catch((err) => console.error(`[flow] push for customer ${customerId} failed: ${err.message}`));
+}
+
+app.post("/flow/points-changed", rateLimit({ windowMs: 60 * 1000, max: 600 }), (req, res) => {
+  if (FLOW_SECRET.length < 32) {
+    console.error("[flow] FLOW_SHARED_SECRET is missing or too short (32+ characters)");
+    return res.status(503).json({ error: "Not configured" });
+  }
+  if (!safeEqual(String(req.headers["x-hera-flow-secret"] || ""), FLOW_SECRET)) {
+    console.warn(`[flow] wrong secret from ${req.ip}`);
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const customerId = normId(req.body?.customerId);
+  if (!customerId) return res.status(400).json({ error: "Invalid customerId" });
+  const isPending = req.body?.isPending === true || String(req.body?.isPending).toLowerCase() === "true";
+  if (isPending) return res.json({ ok: true, push: "skipped (pending)" });
+  if (!hp.usesHC(customerId)) return res.json({ ok: true, push: "skipped (customer not on Hera Points yet)" });
+
+  res.json({ ok: true });
+
+  if (flowTimers.has(customerId)) return; // a push is already scheduled
+  const wait = (flowLastPush.get(customerId) || 0) + FLOW_DEBOUNCE_MS - Date.now();
+  if (wait <= 0) return flowPush(customerId);
+  flowTimers.set(customerId, setTimeout(() => { flowTimers.delete(customerId); flowPush(customerId); }, wait));
+});
+
+// Forget old entries (memory)
+setInterval(() => {
+  const old = Date.now() - 10 * 60 * 1000;
+  for (const [id, t] of flowLastPush) if (t < old) flowLastPush.delete(id);
+}, 10 * 60 * 1000).unref();
+
+// ─── Switch day: refresh every Wallet card once (wallet-push.js, /wallet-push) ─
+
+registerWalletPush(app, {
+  rateLimit,
+  safeEqual,
+  graphql: (query, variables) => graphqlWithRetry(query, variables, { timeoutMs: 30000, attempts: 2 }),
+  fetchCustomer,
+  pushToDevices,
+  usesHC: hp.usesHC,
+});
 
 // ─── OAuth (only used when (re)installing the app) ────────────────────────────
 

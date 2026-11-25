@@ -67,8 +67,19 @@ services:
       # MEMO head-office page /memo: password (10+ characters). Optional: REPORT_PASSWORD is used when it is not set
       - key: MEMO_ADMIN_PASSWORD
         sync: false
-      # Receipt points: campaign multiplier for the estimate (optional, default 1)
-      - key: POINTS_MULTIPLIER
+      # Hera Points (replaces Smile). URL: https://hera-points-web.onrender.com (no trailing slash)
+      - key: HERA_CONNECT_API_URL
+        sync: false
+      - key: HERA_CONNECT_API_KEY
+        sync: false
+      # Secret sent by the Flow "Hera Points: points changed" in header X-Hera-Flow-Secret (32+ characters)
+      - key: FLOW_SHARED_SECRET
+        sync: false
+      # smile (default) until the switch day, then hc
+      - key: POINTS_SOURCE
+        sync: false
+      # Shopify customer IDs (comma separated) that already use Hera Points while POINTS_SOURCE=smile
+      - key: HC_TEST_CUSTOMER_IDS
         sync: false
       # Optional switches (defaults: POS_AUTH_MODE=log, LEGACY_WALLET_LINKS=on)
       - key: POS_AUTH_MODE
