@@ -667,6 +667,34 @@ const memoHelpers = registerMemo(app, {
 // Head-office page to view and edit every store's memos: /memo (memo-admin.js)
 registerMemoAdmin(app, { rateLimit, safeEqual, memo: memoHelpers });
 
+// ─── POS: customer note (tile "Customer Note") ────────────────────────────────
+// Returns the Shopify customer note of the customer in the POS cart, so the tile can warn staff.
+// The note text is never written to the logs.
+
+app.post(
+  "/api/customer-note",
+  rateLimit({ windowMs: 60 * 1000, max: 120 }),
+  requirePosAuthStrict,
+  async (req, res) => {
+    const customerId = String(req.body?.customerId ?? "").replace(/^gid:\/\/shopify\/Customer\//, "");
+    if (!isCustomerId(customerId)) return res.status(400).json({ error: "Invalid customer" });
+    try {
+      const data = await graphqlWithRetry(
+        `query CustomerNote($id: ID!) { customer(id: $id) { firstName lastName note } }`,
+        { id: customerGid(customerId) },
+        { timeoutMs: 8000, attempts: 2 }
+      );
+      const c = data.customer;
+      if (!c) return res.status(404).json({ error: "Customer not found" });
+      const note = String(c.note || "").trim();
+      return res.json({ hasNote: note.length > 0, note, name: `${c.firstName || ""} ${c.lastName || ""}`.trim() });
+    } catch (err) {
+      console.error(`[customer-note] lookup failed for customer ${customerId}: ${err.message}`);
+      return res.status(502).json({ error: "Could not read the note right now" });
+    }
+  }
+);
+
 // ─── POS: points printed on the receipt (points.js) ───────────────────────────
 // The background extension "points-sync" sends the cart; the receipt's Liquid block prints the result.
 

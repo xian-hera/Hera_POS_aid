@@ -1,0 +1,16 @@
+api_version = "2026-10"
+
+[[extensions]]
+type = "ui_extension"
+name = "Customer Note"
+# `uid` is added automatically by `shopify app deploy` the first time
+handle = "customer-note"
+description = "Customer Note: highlights the tile when the customer in the cart has a note (Shopify customer note)"
+
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"

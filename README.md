@@ -41,6 +41,7 @@ Hera_POS_aid/
 | `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Hera Points balance, asks Hera Points to estimate this sale's points and writes `custom.receipt_points_*` for the receipt (Hera Points customers only). POS session token always required. |
 | `POST /flow/points-changed` | Shopify Flow "Hera Points: points changed" | Refreshes the customer's Apple Wallet card (APNs push). Header `X-Hera-Flow-Secret` = `FLOW_SHARED_SECRET`. Pending points: no push. Several changes within 30 s give one push. |
 | `GET /wallet-push` | Head office, switch day only | Sends one update to every Wallet card of the Hera Points customers (password `REPORT_PASSWORD`). |
+| `POST /api/customer-note` | POS "Customer Note" tile | Returns the Shopify customer note of the customer in the cart (`hasNote`, `note`, `name`). POS session token always required. The note is never logged. |
 | `POST /api/unit/status`, `/api/unit/answer` | Thank you / Order status page block "unit-check" | Should the block ask for the unit number; save the customer's answer (unit → shipping address line 2, or "no unit"). Checkout session token + the order's confirmation number required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
@@ -251,6 +252,14 @@ Goal: the printed receipt shows the customer's points **including this sale**. C
 
 All earning rules (no tax, compare-at prices, gift cards, campaigns, rounding up) are applied by Hera Points.
 `custom.points_balance` is not touched by this feature.
+
+## Customer Note (POS)
+
+Tile + modal, code `extensions/customer-note/` (API 2026-10). Reads the native Shopify customer **note**.
+When the customer in the cart has a note, the tile turns to the accent colour (`tone="accent"`), shows
+"⚠ Customer note" with a count of 1, and a toast appears once. The note text is shown only after tapping the
+tile (the screen can be seen by customers). Checked again when the customer changes, and at most once a minute
+while the same customer stays in the cart. Put the tile on the first page of the smart grid.
 
 ## Demo Wig Discount (POS)
 

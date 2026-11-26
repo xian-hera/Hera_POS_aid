@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Note Tile Mock</title>
+<style>
+  :root {
+    --bg: #0f0f10; --panel: #1b1b1d; --tile: #2a2a2d; --tile-text: #f2f2f2; --muted: #a0a0a6;
+    --accent: #2c6ecb; --accent-text: #ffffff; --line: #333337; --page: #f4f4f5; --ink: #1a1a1a;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --page: #121214; --ink: #eaeaea; } }
+  :root[data-theme="dark"] { --page: #121214; --ink: #eaeaea; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .note { font-size: 14px; color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .controls button { font: inherit; font-size: 14px; padding: 8px 12px; border-radius: 8px; border: 1px solid #999; background: transparent; color: var(--ink); cursor: pointer; }
+  .controls button.on { background: var(--ink); color: var(--page); }
+  .ipad { position: relative; background: var(--bg); border-radius: 22px; padding: 14px; display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; min-height: 420px; overflow: hidden; }
+  .cart { background: var(--panel); border-radius: 12px; padding: 14px; color: var(--tile-text); font-size: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .cust { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; background: var(--tile); }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; background: #555; display: grid; place-items: center; font-weight: 600; }
+  .line { display: flex; justify-content: space-between; padding: 8px 2px; border-bottom: 1px solid var(--line); }
+  .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; align-content: start; }
+  .tile { position: relative; background: var(--tile); color: var(--tile-text); border-radius: 12px; padding: 12px; min-height: 92px; display: flex; flex-direction: column; justify-content: flex-end; cursor: default; transition: background .25s; }
+  .tile h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .tile p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .tile.target { cursor: pointer; outline: 2px dashed #ffffff33; outline-offset: 2px; }
+  .tile.accent { background: var(--accent); color: var(--accent-text); }
+  .tile.accent p { color: #ffffffd0; }
+  .count { position: absolute; top: 10px; right: 10px; min-width: 22px; height: 22px; border-radius: 11px; background: #ffffff; color: #111; font-size: 12px; font-weight: 700; display: grid; place-items: center; padding: 0 6px; }
+  .toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); background: #f2f2f2; color: #111; padding: 10px 16px; border-radius: 10px; font-size: 14px; box-shadow: 0 6px 20px #0006; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
+  .toast.show { opacity: 1; }
+  .modal { position: absolute; inset: 0; background: #000a; display: none; align-items: center; justify-content: center; padding: 16px; }
+  .modal.show { display: flex; }
+  .sheet { background: var(--panel); color: var(--tile-text); border-radius: 14px; width: min(460px, 100%); padding: 18px; }
+  .sheet h2 { margin: 0 0 4px; font-size: 17px; }
+  .sheet .text { background: var(--tile); border-radius: 10px; padding: 12px; margin: 12px 0; line-height: 1.5; font-size: 14px; }
+  .sheet button { font: inherit; padding: 9px 14px; border-radius: 8px; border: 0; background: #f2f2f2; color: #111; cursor: pointer; }
+  .legend { margin-top: 14px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+  @media (max-width: 680px) { .ipad { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>顾客备注磁贴：效果模拟</h1>
+  <p class="note">这是示意图，用来看效果，不是 POS 的真实截图。点上面的按钮切换顾客；有备注时可以点虚线框里的磁贴，看弹出的完整备注。<br>
+  强调色的具体颜色由 POS 决定，图里的蓝色是我估计的。</p>
+
+  <div class="controls">
+    <button data-s="none" class="on">购物车无顾客</button>
+    <button data-s="plain">加入顾客（无备注）</button>
+    <button data-s="flag">加入顾客（有备注）</button>
+  </div>
+
+  <div class="ipad">
+    <div class="cart">
+      <div class="cust" id="cust"><div class="avatar">+</div><div><div>Add customer</div><div class="muted" style="font-size:12px">No customer in cart</div></div></div>
+      <div class="line"><span>Synthetic Wig – Bob 12"</span><span>$89.00</span></div>
+      <div class="line"><span>Wig Cap</span><span>$6.00</span></div>
+      <div class="line muted"><span>Subtotal</span><span>$95.00</span></div>
+      <div style="margin-top:auto" class="line"><b>Total</b><b>$109.23</b></div>
+    </div>
+
+    <div class="grid">
+      <div class="tile"><h3>Customer Login</h3><p>Scan loyalty card</p></div>
+      <div class="tile"><h3>Restock Notify</h3><p>Ask for an item</p></div>
+      <div class="tile target" id="noteTile"><span class="count" id="count" hidden>1</span><h3 id="th">Customer note</h3><p id="ts">No customer</p></div>
+      <div class="tile"><h3>MEMO</h3><p>Handy info</p></div>
+      <div class="tile"><h3>Gift Card Sale</h3><p>Activate a card</p></div>
+      <div class="tile"><h3>Products</h3><p>Search catalog</p></div>
+    </div>
+
+    <div class="toast" id="toast">⚠ This customer has a note. Tap "Customer note".</div>
+
+    <div class="modal" id="modal">
+      <div class="sheet">
+        <h2>Customer note</h2>
+        <div class="muted" style="font-size:13px">Jane D. · added by staff</div>
+        <div class="text">示例备注：上次来店时发生过未付款带走商品的情况，请留意试戴区。</div>
+        <button id="close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>三种状态</b><br>
+    · 无顾客：普通颜色，显示 "No customer"，点了没反应。<br>
+    · 顾客无备注：普通颜色，显示 "None"。<br>
+    · 顾客有备注：磁贴变成强调色，右上角出现数字 1，下方弹出几秒钟的提示；点磁贴才显示备注内容。
+  </div>
+</div>
+
+<script>
+  const tile = document.getElementById("noteTile"), th = document.getElementById("th"), ts = document.getElementById("ts");
+  const count = document.getElementById("count"), toast = document.getElementById("toast"), modal = document.getElementById("modal");
+  const cust = document.getElementById("cust");
+  let state = "none", toastTimer;
+  function set(s) {
+    state = s;
+    document.querySelectorAll(".controls button").forEach(b => b.classList.toggle("on", b.dataset.s === s));
+    tile.classList.toggle("accent", s === "flag");
+    count.hidden = s !== "flag";
+    th.textContent = s === "flag" ? "⚠ Customer note" : "Customer note";
+    ts.textContent = s === "none" ? "No customer" : s === "plain" ? "None" : "Tap to view";
+    cust.innerHTML = s === "none"
+      ? '<div class="avatar">+</div><div><div>Add customer</div><div class="muted" style="font-size:12px">No customer in cart</div></div>'
+      : '<div class="avatar">J</div><div><div>Jane D.</div><div class="muted" style="font-size:12px">1 order</div></div>';
+    clearTimeout(toastTimer); toast.classList.remove("show");
+    if (s === "flag") { toast.classList.add("show"); toastTimer = setTimeout(() => toast.classList.remove("show"), 3500); }
+  }
+  document.querySelectorAll(".controls button").forEach(b => b.onclick = () => set(b.dataset.s));
+  tile.onclick = () => { if (state === "flag") modal.classList.add("show"); };
+  document.getElementById("close").onclick = () => modal.classList.remove("show");
+</script>
+</body>
+</html>
