@@ -1,4 +1,4 @@
-// Shared by the tile and the modal: read the Shopify customer note through the Hera_POS_aid backend.
+// Customer note (Shopify customer "note" field), shared by the Login tile and modal, read through the Hera_POS_aid backend.
 // Do not change SERVER_URL: Apple Wallet cards also point to this address.
 export const SERVER_URL = "https://search-0wf4.onrender.com";
 

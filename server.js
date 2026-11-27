@@ -234,8 +234,17 @@ async function setCustomerMetafield(customerId, key, value, type) {
   if (errs.length) throw new Error(errs.map((e) => e.message).join(", "));
 }
 
+// Also keeps custom.apple_card_added (boolean) in step: true while at least one device holds the card.
+// Other apps / the theme use that flag to hide the "Add to Apple Wallet" button.
 async function saveDevices(customer, devices) {
-  await setCustomerMetafield(customer.id, "wallet_devices", JSON.stringify(devices), "json");
+  const data = await shopifyGraphQL(METAFIELDS_SET, {
+    metafields: [
+      { ownerId: customerGid(customer.id), namespace: "custom", key: "wallet_devices", type: "json", value: JSON.stringify(devices) },
+      { ownerId: customerGid(customer.id), namespace: "custom", key: "apple_card_added", type: "boolean", value: devices.length > 0 ? "true" : "false" },
+    ],
+  });
+  const errs = data.metafieldsSet?.userErrors || [];
+  if (errs.length) throw new Error(errs.map((e) => e.message).join(", "));
   if (customer.hasLegacyFields) {
     await shopifyGraphQL(METAFIELDS_DELETE, {
       metafields: [

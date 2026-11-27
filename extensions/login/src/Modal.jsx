@@ -1,6 +1,7 @@
 import "@shopify/ui-extensions/preact";
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
+import { fetchNote, cartCustomerId } from './note.js';
 
 // Shared Hera_POS_aid backend (Render). Do not change: Apple Wallet cards also point here.
 const SERVER_URL = "https://search-0wf4.onrender.com";
@@ -34,6 +35,24 @@ function Extension() {
   const [errorMsg, setErrorMsg] = useState(null);
   const processingRef = useRef(false);
   const lastScannedRef = useRef(null);
+  // Customer note: when the customer already in the cart has one, the modal shows only the note
+  // ("note" view, no scanning: a customer is already logged in).
+  const [view, setView] = useState('scan');
+  const viewRef = useRef('scan');
+  viewRef.current = view;
+  const [note, setNote] = useState(null); // { name, text } of the customer in the cart / just logged in
+
+  useEffect(() => {
+    const id = cartCustomerId();
+    if (!id) return;
+    fetchNote(id)
+      .then((data) => {
+        if (!data?.hasNote) return;
+        setNote({ name: data.name || '', text: String(data.note || '') });
+        setView((v) => (v === 'scan' && !processingRef.current ? 'note' : v));
+      })
+      .catch(() => { /* could not check: stay on scanning */ });
+  }, []);
 
   const verifyCustomer = async (scannedValue) => {
     const value = String(scannedValue).trim();
@@ -60,6 +79,8 @@ function Extension() {
 
       setCustomer(data);
       setStatus('success');
+      // Logged in: close the modal (the tile then warns if the customer has a note).
+      try { window.close(); } catch { /* stays open on the success screen */ }
     } catch (err) {
       setErrorMsg(err.message || 'Network error, please try again.');
       setStatus('error');
@@ -71,6 +92,7 @@ function Extension() {
   useEffect(() => {
     const unsubscribe = shopify.scanner.scannerData.current.subscribe((result) => {
       if (!result?.data) return;
+      if (viewRef.current === 'note') return; // a customer is already in the cart
       if (status === 'verifying' || status === 'success') return;
       verifyCustomer(result.data);
     });
@@ -84,8 +106,26 @@ function Extension() {
     lastScannedRef.current = null;
   };
 
+  if (view === 'note' && note) {
+    return (
+      <s-page key="note" heading="Customer note">
+        <s-scroll-box>
+          <s-box padding="base">
+            <s-stack direction="block" gap="base">
+              {note.name && <s-text type="strong">{note.name}</s-text>}
+              <s-stack direction="block" gap="small-200">
+                {note.text.split(/\r?\n/).map((line, i) => <s-text key={i}>{line || ' '}</s-text>)}
+              </s-stack>
+              <s-text type="small" color="subdued">To change this note, edit the customer in POS or in the Shopify admin.</s-text>
+            </s-stack>
+          </s-box>
+        </s-scroll-box>
+      </s-page>
+    );
+  }
+
   return (
-    <s-page heading="Customer Login">
+    <s-page key="scan" heading="Customer Login">
       <s-scroll-box>
         <s-box padding="base">
 

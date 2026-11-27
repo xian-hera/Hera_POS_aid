@@ -25,6 +25,7 @@ const PAGE_QUERY = `
         id
         devices: metafield(namespace: "custom", key: "wallet_devices") { value }
         legacy: metafield(namespace: "custom", key: "wallet_push_token") { value }
+        flag: metafield(namespace: "custom", key: "apple_card_added") { value }
       }
       pageInfo { hasNextPage endCursor }
     }
@@ -42,6 +43,69 @@ export function registerWalletPush(app, { rateLimit, safeEqual, graphql, fetchCu
   const ENABLED = PASSWORD.length >= 10;
 
   const job = { state: "idle", step: "", customers: 0, done: 0, pushes: 0, failed: 0, startedAt: null, finishedAt: null, error: "" };
+
+  // One-time fill of custom.apple_card_added (true = at least one device holds the card). After that,
+  // server.js keeps it up to date on every registration / unregistration / dead device.
+  const flagJob = { state: "idle", step: "", read: 0, withCard: 0, setTrue: 0, setFalse: 0, startedAt: null, finishedAt: null, error: "" };
+
+  async function writeFlags(batch) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const data = await graphql(
+          `mutation WalletFlag($metafields: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $metafields) { userErrors { field message } } }`,
+          { metafields: batch.map(([id, v]) => ({ ownerId: `gid://shopify/Customer/${id}`, namespace: "custom", key: "apple_card_added", type: "boolean", value: v })) }
+        );
+        const errs = data.metafieldsSet?.userErrors || [];
+        if (errs.length) throw new Error(errs.map((e) => e.message).join(", "));
+        return;
+      } catch (err) {
+        if (attempt >= 10 || !/throttl/i.test(err.message)) throw err;
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      }
+    }
+  }
+
+  async function fillFlags() {
+    Object.assign(flagJob, { state: "running", step: "", read: 0, withCard: 0, setTrue: 0, setFalse: 0, startedAt: new Date().toISOString(), finishedAt: null, error: "" });
+    try {
+      let after = null;
+      let pending = [];
+      const flush = async () => {
+        while (pending.length) {
+          const batch = pending.splice(0, 25);
+          await writeFlags(batch);
+          for (const [, v] of batch) v === "true" ? flagJob.setTrue++ : flagJob.setFalse++;
+        }
+      };
+      for (;;) {
+        flagJob.step = `reading customers (${flagJob.read} read, ${flagJob.withCard} with a card)`;
+        const data = await readPage(after);
+        const conn = data.customers;
+        for (const row of conn?.nodes || []) {
+          flagJob.read++;
+          let hasDevice = Boolean(row.legacy?.value);
+          try { const d = JSON.parse(row.devices?.value || "[]"); if (Array.isArray(d) && d.some((x) => x?.pushToken)) hasDevice = true; } catch { /* ignore */ }
+          if (hasDevice) flagJob.withCard++;
+          const id = String(row.id || "").split("/").pop();
+          const current = row.flag?.value; // "true" | "false" | undefined
+          if (hasDevice && current !== "true") pending.push([id, "true"]);
+          else if (!hasDevice && current === "true") pending.push([id, "false"]);
+        }
+        await flush();
+        if (!conn?.pageInfo?.hasNextPage) break;
+        after = conn.pageInfo.endCursor;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      flagJob.state = "finished";
+      flagJob.step = "";
+      console.log(`[wallet-flag] finished: ${flagJob.read} read, ${flagJob.withCard} with a card, ${flagJob.setTrue} set true, ${flagJob.setFalse} set false`);
+    } catch (err) {
+      flagJob.state = "failed";
+      flagJob.error = err.message;
+      console.error(`[wallet-flag] failed: ${err.message}`);
+    }
+    flagJob.finishedAt = new Date().toISOString();
+  }
 
   // Shopify limits how much can be read per second: wait and try again when throttled.
   async function readPage(after) {
@@ -127,11 +191,24 @@ column is read, in this browser; nothing else is sent. Without a file, every cus
 <form id="f"><input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
 <button>Start</button></form>
 <h3>Progress</h3><pre id="s">…</pre>
+<hr style="margin:28px 0">
+<h2>Fill "apple_card_added"</h2>
+<p>One time: sets the customer field <code>custom.apple_card_added</code> to true for every customer holding a card
+(and false where a card was removed). Nothing is sent to phones. Uses the same password.</p>
+<button id="fb">Fill now</button>
+<pre id="fs">…</pre>
 <script>
 const s = document.getElementById("s");
 let ids = null;
 async function poll(){ try{ const r = await fetch("/wallet-push/status"); s.textContent = JSON.stringify(await r.json(), null, 2);}catch(e){} }
-setInterval(poll, 3000); poll();
+async function pollFlag(){ try{ const r = await fetch("/wallet-push/flag-status"); document.getElementById("fs").textContent = JSON.stringify(await r.json(), null, 2);}catch(e){} }
+setInterval(poll, 3000); poll(); setInterval(pollFlag, 3000); pollFlag();
+document.getElementById("fb").onclick = async () => {
+  const pw = document.getElementById("pw").value;
+  if (!pw) { alert("Type the password first"); return; }
+  if (!confirm("Fill apple_card_added for all customers now?")) return;
+  const r = await fetch("/wallet-push/fill-flag", {method:"POST", headers:{"Content-Type":"text/plain"}, body: JSON.stringify({password: pw})});
+  const j = await r.json().catch(() => ({})); alert(j.message || j.error || r.status); pollFlag(); };
 function splitCsvLine(line){ const out=[]; let cur="", q=false;
   for (const ch of line){ if (ch === '"') q = !q; else if ((ch === "," || ch === ";" || ch === "\\t") && !q){ out.push(cur); cur=""; } else cur += ch; }
   out.push(cur); return out.map(x => x.trim()); }
@@ -160,6 +237,25 @@ document.getElementById("f").onsubmit = async (e) => { e.preventDefault();
   const r = await fetch("/wallet-push/start", {method:"POST", headers:{"Content-Type":"text/plain"}, body: JSON.stringify({password: document.getElementById("pw").value, ids})});
   const j = await r.json().catch(() => ({})); alert(j.message || j.error || r.status); poll(); };
 </script>`));
+  });
+
+  app.get("/wallet-push/flag-status", rateLimit({ windowMs: 60 * 1000, max: 60 }), (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json(flagJob);
+  });
+
+  app.post("/wallet-push/fill-flag", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }), express.text({ type: "text/plain", limit: "10kb" }), (req, res) => {
+    if (!ENABLED) return res.status(503).json({ error: "Not set up" });
+    let body = req.body;
+    if (typeof body === "string") { try { body = JSON.parse(body); } catch { return res.status(400).json({ error: "Bad request" }); } }
+    if (!safeEqual(String(body?.password ?? ""), PASSWORD)) {
+      console.warn(`[wallet-flag] wrong password from ${req.ip}`);
+      return res.status(401).json({ error: "Wrong password" });
+    }
+    if (flagJob.state === "running") return res.status(409).json({ error: "Already running" });
+    fillFlags();
+    console.log(`[wallet-flag] started from ${req.ip}`);
+    res.json({ message: "Started" });
   });
 
   app.get("/wallet-push/status", rateLimit({ windowMs: 60 * 1000, max: 60 }), (req, res) => {

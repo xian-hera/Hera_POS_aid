@@ -41,7 +41,7 @@ Hera_POS_aid/
 | `POST /api/points/preview` | POS background extension "points-sync" | Receives the cart, reads the Hera Points balance, asks Hera Points to estimate this sale's points and writes `custom.receipt_points_*` for the receipt (Hera Points customers only). POS session token always required. |
 | `POST /flow/points-changed` | Shopify Flow "Hera Points: points changed" | Refreshes the customer's Apple Wallet card (APNs push). Header `X-Hera-Flow-Secret` = `FLOW_SHARED_SECRET`. Pending points: no push. Several changes within 30 s give one push. |
 | `GET /wallet-push` | Head office, switch day only | Sends one update to every Wallet card of the Hera Points customers (password `REPORT_PASSWORD`). |
-| `POST /api/customer-note` | POS "Customer Note" tile | Returns the Shopify customer note of the customer in the cart (`hasNote`, `note`, `name`). POS session token always required. The note is never logged. |
+| `POST /api/customer-note` | POS "Apple Card Login" tile (note alert) | Returns the Shopify customer note of the customer in the cart (`hasNote`, `note`, `name`). POS session token always required. The note is never logged. |
 | `POST /api/unit/status`, `/api/unit/answer` | Thank you / Order status page block "unit-check" | Should the block ask for the unit number; save the customer's answer (unit → shipping address line 2, or "no unit"). Checkout session token + the order's confirmation number required. |
 | `POST /api/restock/run` | Shopify Flow (10:00 and 16:00) | Checks stock for every pending request and sends the Klaviyo event. Needs header `X-Restock-Key`. `?dryRun=1` shows what would be sent without sending or changing anything. |
 | `GET /proxy/giftcard-balance` (+ `app.js`, `jsqr.js`) | Storefront `/apps/hera/giftcard-balance` | Gift card balance page, shown inside the theme, English or French following the storefront language. Files live in `storefront/`. |
@@ -52,7 +52,9 @@ Hera_POS_aid/
 | `/auth`, `/auth/callback` | Re-install only | OAuth. The token is shown once in the browser and never logged. |
 
 Customer metafields (namespace `custom`): `points_balance`, `wallet_devices` (JSON list of
-`{deviceId, pushToken}`). The older `wallet_push_token` and `wallet_device_id` fields are read
+`{deviceId, pushToken}`), `apple_card_added` (boolean, true while at least one device holds the card; kept by
+`saveDevices`, filled once for existing customers with the second button on `/wallet-push`; other apps use it to hide
+the "Add to Apple Wallet" button). The older `wallet_push_token` and `wallet_device_id` fields are read
 once and then migrated automatically.
 
 ## Environment variables (Render)
@@ -253,13 +255,14 @@ Goal: the printed receipt shows the customer's points **including this sale**. C
 All earning rules (no tax, compare-at prices, gift cards, campaigns, rounding up) are applied by Hera Points.
 `custom.points_balance` is not touched by this feature.
 
-## Customer Note (POS)
+## Customer note alert (POS, in the Apple Card Login tile)
 
-Tile + modal, code `extensions/customer-note/` (API 2026-10). Reads the native Shopify customer **note**.
-When the customer in the cart has a note, the tile turns to the accent colour (`tone="accent"`), shows
-"⚠ Customer note" with a count of 1, and a toast appears once. The note text is shown only after tapping the
-tile (the screen can be seen by customers). Checked again when the customer changes, and at most once a minute
-while the same customer stays in the cart. Put the tile on the first page of the smart grid.
+Code: `extensions/login/` (API 2026-10; `src/note.js` reads `/api/customer-note`). Reads the native Shopify customer **note**.
+When the customer in the cart has a note, the Login tile turns to the accent colour (`tone="accent"`) with
+"⚠ Note attention ⚠" / "Tap to read the note for this customer", a count of 1, and a toast appears once.
+Tapping it opens the note first ("Scan a card" goes on to the scanner). After a card is scanned, the modal also says
+when that customer has a note. The note text is never shown on the tile (customers may see the screen).
+Checked again when the customer changes, and at most once a minute while the same customer stays in the cart.
 
 ## Demo Wig Discount (POS)
 
